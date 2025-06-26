@@ -59,7 +59,3 @@ Ikuti instruksi pada layar untuk memasukkan nomor pemain dan mulai bermain.
 ## Kontribusi
 
 Silakan ajukan pull request atau issue jika ingin berkontribusi atau menemukan bug.
-
-## Lisensi
-
-Proyek ini menggunakan lisensi MIT.
