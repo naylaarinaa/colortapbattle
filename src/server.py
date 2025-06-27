@@ -1,64 +1,63 @@
-import socket
-import threading
-import json
+from flask import Flask, jsonify, request
+import random
 
-COLOR_LIST = [
+app = Flask(__name__)
+
+COLOR_NAMES = [
     "RED", "GREEN", "BLUE", "YELLOW", "PURPLE", "BLACK",
     "GRAY", "ORANGE", "PINK", "BROWN"
 ]
 
-class GameServer:
-    def __init__(self, host='127.0.0.1', port=55555):
-        self.server_address = (host, port)
-        self.players = {}
-        self.lock = threading.Lock()
+game_state = {
+    'question_id_counter': 0,
+    'current_correct_answer': None,
+    'player_scores': {}
+}
 
-    def handle_client(self, client_socket, address):
-        print(f"Connection from {address} has been established.")
-        player_id = str(len(self.players) + 1)
-        with self.lock:
-            self.players[player_id] = client_socket
+def generate_new_question():
+    game_state['question_id_counter'] += 1
+    
+    question_text = random.choice(COLOR_NAMES)
+    correct_color_name = random.choice([c for c in COLOR_NAMES if c != question_text])
+    
+    options = random.sample([c for c in COLOR_NAMES if c != correct_color_name], k=4)
+    options.append(correct_color_name)
+    random.shuffle(options)
+    
+    game_state['current_correct_answer'] = correct_color_name
+    
+    return {
+        "question_id": game_state['question_id_counter'],
+        "text": question_text,
+        "text_color": correct_color_name,
+        "options": options
+    }
 
-        try:
-            while True:
-                data = client_socket.recv(1024)
-                if not data:
-                    break
-                command = data.decode().strip()
-                response = self.process_command(command, player_id)
-                client_socket.sendall((json.dumps(response) + "\r\n\r\n").encode())
-        finally:
-            client_socket.close()
-            with self.lock:
-                if player_id in self.players:
-                    del self.players[player_id]
-            print(f"Connection from {address} closed.")
+@app.route('/question', methods=['GET'])
+def get_question():
+    question_data = generate_new_question()
+    return jsonify(question_data)
 
-    def process_command(self, command, player_id):
-        if command.startswith("get_all_players"):
-            return {"status": "OK", "players": list(self.players.keys())}
-        elif command.startswith("get_players_face"):
-            return {"status": "OK", "face": "base64_encoded_image"}
-        elif command.startswith("set_location"):
-            return {"status": "OK"}
-        elif command.startswith("get_location"):
-            return {"status": "OK", "location": "100,200"}
-        return {"status": "ERROR"}
+@app.route('/answer', methods=['POST'])
+def post_answer():
+    data = request.get_json()
+    player_id = data.get('player_id', 'anonymous')
+    player_answer = data.get('answer')
 
-    def start(self):
-        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server_socket.bind(self.server_address)
-        server_socket.listen(5)
-        print(f"Server listening on {self.server_address}")
+    if player_id not in game_state['player_scores']:
+        game_state['player_scores'][player_id] = 0
 
-        try:
-            while True:
-                client_socket, address = server_socket.accept()
-                client_thread = threading.Thread(target=self.handle_client, args=(client_socket, address))
-                client_thread.start()
-        finally:
-            server_socket.close()
+    is_correct = (player_answer == game_state['current_correct_answer'])
+    
+    if is_correct:
+        game_state['player_scores'][player_id] += 100
 
-if __name__ == "__main__":
-    game_server = GameServer()
-    game_server.start()
+    response = {
+        'correct': is_correct,
+        'new_score': game_state['player_scores'][player_id]
+    }
+    
+    return jsonify(response)
+
+if __name__ == '__main__':
+    app.run(host='127.0.0.1', port=8080, debug=True)
