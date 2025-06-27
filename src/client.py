@@ -100,9 +100,32 @@ def get_user_answer(mouse_pos, positions, option_names):
     return None
 
 class ClientInterface:
-    def __init__(self, player_id):
-        self.player_id = player_id
+    def __init__(self, player_username):
+        self.player_username = player_username
         self.server_url = 'http://127.0.0.1:8080'
+
+    def join_game(self):
+        """Join the multiplayer game lobby"""
+        payload = {'player_username': self.player_username}
+        print(f"Attempting to join game as {self.player_username}")
+        try:
+            response = requests.post(f"{self.server_url}/join", json=payload)
+            response.raise_for_status()
+            result = response.json()
+            print(f"Join response: {result}")
+            return result
+        except requests.exceptions.RequestException as e:
+            print(f"Failed to join game: {e}")
+            return None
+
+    def get_game_status(self):
+        """Get current game status and player info"""
+        try:
+            response = requests.get(f"{self.server_url}/status")
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException:
+            return None
 
     def get_question(self):
         try:
@@ -113,7 +136,7 @@ class ClientInterface:
             return None
 
     def send_answer(self, question_id, answer):
-        payload = {'player_id': self.player_id, 'question_id': question_id, 'answer': answer}
+        payload = {'player_username': self.player_username, 'question_id': question_id, 'answer': answer}
         try:
             response = requests.post(f"{self.server_url}/answer", json=payload)
             response.raise_for_status()
@@ -121,53 +144,161 @@ class ClientInterface:
         except requests.exceptions.RequestException:
             return None
 
-player_id = input("Masukkan ID pemain Anda: ")
-client = ClientInterface(player_id)
-score, answered, question_count = 0, False, 0
-max_questions, time_limit = 10, 10
-question_start_time = 0
+def show_lobby_screen(client):
+    """Display waiting screen until enough players join"""
+    # Use the same font path as in show_instructions_modal
+    font_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../assets/LuckiestGuy-Regular.ttf'))
+    font_path_2 = os.path.abspath(os.path.join(os.path.dirname(__file__), '../assets/BalsamiqSans-Regular.ttf'))
+
+    # Load waiting lobby background
+    lobby_img_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../assets/waiting_lobby.png'))
+    lobby_img = pygame.image.load(lobby_img_path).convert_alpha()
+    lobby_img = pygame.transform.smoothscale(lobby_img, (WIDTH, HEIGHT))
+    
+    # Use the custom font instead of system fonts
+    font_info = pygame.font.Font(font_path, 40)
+    font_players = pygame.font.Font(font_path_2, 30)
+    
+    # Join the game
+    join_result = client.join_game()
+    if not join_result:
+        show_popup("Failed to connect to server!", color=(255, 0, 0))
+        pygame.quit()
+        sys.exit()
+    
+    while True:
+        status = client.get_game_status()
+        if not status:
+            show_popup("Lost connection to server!", color=(255, 0, 0))
+            pygame.quit()
+            sys.exit()
+        
+        print(f"Lobby status: {status}")  # Debug output
+        
+        if status.get('game_started'):
+            print("Game started! Exiting lobby...")
+            break
+            
+        # Draw background image
+        screen.blit(lobby_img, (0, 0))
+        
+        # Player count (bottom left, not all the way)
+        player_count = status.get('player_count', 0)
+        required_players = status.get('required_players', 2)
+        players_needed = status.get('players_needed', required_players)
+        count_msg = font_info.render(f"Players: {player_count}/{required_players}", True, (255, 255, 255))
+        screen.blit(count_msg, (100, HEIGHT - 120))
+        
+        if players_needed > 0:
+            need_msg = font_players.render(f"Need {players_needed} more player(s)", True, (255, 255, 255))
+            screen.blit(need_msg, (100, HEIGHT - 80))
+        else:
+            ready_msg = font_players.render("Starting game...", True, (0, 255, 0))
+            screen.blit(ready_msg, (100, HEIGHT - 80))
+        
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                sys.exit()
+        
+        pygame.display.flip()
+        clock.tick(10)  # Lower FPS for lobby
+player_username = input("Masukkan Usernme Anda: ")
+client = ClientInterface(player_username)
+score, answered = 0, False
 current_question = {} 
+last_question_id = None
+last_time_remaining = None
+time_up_shown = False
+
+# Initialize global variables
+last_time_remaining = None
+time_up_shown = False
 
 show_instructions_modal()
 
-def get_next_question():
-    global current_question, answered, question_count, question_start_time
+# Show lobby and wait for game to start
+show_lobby_screen(client)
+
+def get_synchronized_question():
+    """Get the current synchronized question from server"""
+    global current_question, answered, last_question_id, time_up_shown
     new_question = client.get_question()
-    if new_question:
+    if new_question and new_question.get('question_id') != last_question_id:
         current_question = new_question
         answered = False
-        question_count += 1
-        question_start_time = pygame.time.get_ticks()
-    else:
-        print("Koneksi ke server gagal. Game akan ditutup.")
-        pygame.quit()
-        sys.exit()
+        last_question_id = new_question.get('question_id')
+        time_up_shown = False  # Reset time up flag for new question
+        return True
+    return False
 
-get_next_question()
-
+# Game loop
 while True:
+    
+    # Get game status to check if game is still running
+    status = client.get_game_status()
+    if not status:
+        show_popup("Lost connection to server!", color=(255, 0, 0))
+        break
+    
+    if status.get('status') == 'finished':
+        # Show final scores
+        screen.fill((255, 255, 255))
+        font_end = pygame.font.SysFont(None, 60)
+        end_render = font_end.render("Game Finished!", True, (0, 0, 0))
+        screen.blit(end_render, (WIDTH // 2 - end_render.get_width() // 2, HEIGHT // 2 - 60))
+        
+        final_scores = status.get('final_scores', {})
+        y_offset = HEIGHT // 2
+        font_scores = pygame.font.SysFont(None, 40)
+        for player, player_score in final_scores.items():
+            score_text = f"{player}: {player_score}"
+            score_render = font_scores.render(score_text, True, (0, 0, 0))
+            screen.blit(score_render, (WIDTH // 2 - score_render.get_width() // 2, y_offset))
+            y_offset += 40
+        
+        pygame.display.flip()
+        pygame.time.wait(5000)
+        break
+    
+    # Get current question
+    get_synchronized_question()
+    
     screen.fill((255, 255, 255))
     
-    font = pygame.font.SysFont(None, 36)
-    progress_render = font.render(f"Question {question_count} of {max_questions}", True, (0, 0, 0))
-    screen.blit(progress_render, (WIDTH // 2 - progress_render.get_width() // 2, 30))
+    # Display question progress
+    if status.get('current_question_number') and status.get('max_questions'):
+        font = pygame.font.SysFont(None, 36)
+        progress_render = font.render(f"Question {status['current_question_number']} of {status['max_questions']}", True, (0, 0, 0))
+        screen.blit(progress_render, (WIDTH // 2 - progress_render.get_width() // 2, 30))
 
-    if current_question:
+    # Display question and options
+    option_positions = []
+    if current_question and current_question.get('text'):
         display_color_question(current_question.get('text'), current_question.get('text_color'))
         option_positions = draw_name_options(current_question.get('options', []))
     
-    elapsed = (pygame.time.get_ticks() - question_start_time) / 1000
-    remaining = max(0, int(time_limit - elapsed))
+    # Display synchronized timer
+    time_remaining = status.get('question_time_remaining', 0)
+    remaining = max(0, int(time_remaining))
     font_timer = pygame.font.SysFont(None, 40)
-    timer_render = font_timer.render(f"Time left: {remaining}s", True, (200, 0, 0))
+    timer_color = (200, 0, 0) if remaining <= 3 else (0, 0, 0)
+    timer_render = font_timer.render(f"Time left: {remaining}s", True, timer_color)
     screen.blit(timer_render, (WIDTH - 220, 10))
+    
+    # Show status if all players answered
+    if status.get('all_answered'):
+        font_status = pygame.font.SysFont(None, 30)
+        status_render = font_status.render("All players answered! Moving to next...", True, (0, 150, 0))
+        screen.blit(status_render, (WIDTH // 2 - status_render.get_width() // 2, 65))
 
+    # Handle events
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             pygame.quit()
             sys.exit()
             
-        if event.type == pygame.MOUSEBUTTONDOWN and not answered and current_question:
+        if event.type == pygame.MOUSEBUTTONDOWN and not answered and current_question and time_remaining > 0:
             mouse_pos = pygame.mouse.get_pos()
             chosen_name = get_user_answer(mouse_pos, option_positions, current_question.get('options', []))
             
@@ -177,36 +308,51 @@ while True:
                 
                 if result and result.get('correct'):
                     score = result.get('new_score', score)
-                    show_popup("Correct!", color=(0, 180, 0))
+                    if result.get('first_correct'):
+                        show_popup(f"Correct! +{100 + result.get('bonus_points', 0)} pts (First!)", color=(255, 215, 0))
+                    else:
+                        show_popup("Correct! +100 pts", color=(0, 180, 0))
                 elif result:
                     show_popup("Wrong!", color=(200, 0, 0))
                 else:
                     show_popup("No Response", color=(100, 100, 100))
 
                 pygame.event.clear()
-                if question_count < max_questions:
-                    get_next_question()
 
-    if not answered and elapsed >= time_limit:
-        show_popup("Time's Up!", color=(220, 140, 0))
-        answered = True
-        pygame.event.clear()
-        if question_count < max_questions:
-            get_next_question()
-            
-    if question_count >= max_questions and answered:
-        screen.fill((255, 255, 255))
-        font_end = pygame.font.SysFont(None, 60)
-        end_render = font_end.render(f"Game Over! Final Score: {score}", True, (0, 0, 0))
-        screen.blit(end_render, (WIDTH // 2 - end_render.get_width() // 2, HEIGHT // 2 - 30))
-        pygame.display.flip()
-        pygame.time.wait(3000)
-        pygame.quit()
-        sys.exit()
+    # Check if time ran out and show "Time's Up!" message
+    if not answered and time_remaining <= 0 and not time_up_shown and current_question:
+        show_popup("Time's Up!", color=(255, 140, 0))
+        time_up_shown = True
     
+    # Check if all players answered and show message
+    if status.get('all_answered') and not answered and current_question:
+        show_popup("All players answered!", color=(0, 100, 255))
+    
+    last_time_remaining = time_remaining
+
+    # Display current score and leaderboard
     font_score = pygame.font.SysFont(None, 30)
-    score_render = font_score.render(f"Score: {score}", True, (0, 0, 0))
+    score_render = font_score.render(f"Your Score: {score}", True, (0, 0, 0))
     screen.blit(score_render, (10, 10))
+    
+    # Show scoring info
+    font_info = pygame.font.SysFont(None, 20)
+    info_render = font_info.render("Correct: +100 pts | First Correct: +150 pts", True, (100, 100, 100))
+    screen.blit(info_render, (10, 40))
+    
+    # Show other players' scores
+    if status.get('scores'):
+        y_offset = 70
+        font_other = pygame.font.SysFont(None, 24)
+        for player, player_score in status['scores'].items():
+            if player != client.player_username:
+                other_score = font_other.render(f"{player}: {player_score}", True, (100, 100, 100))
+                screen.blit(other_score, (10, y_offset))
+                y_offset += 25
 
     pygame.display.flip()
     clock.tick(FPS)
+
+# Game ended
+pygame.quit()
+sys.exit()
