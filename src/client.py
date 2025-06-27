@@ -60,7 +60,51 @@ def show_instructions_modal():
         pygame.display.flip()
         clock.tick(60)
 
+def show_popup_with_image(message, image_filename, display_time=800):
+    """Show popup with image from assets folder"""
+    try:
+        # Load the image from assets folder
+        img_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../assets', image_filename))
+        popup_img = pygame.image.load(img_path).convert_alpha()
+        
+        # Use original image size without resizing
+        popup_width, popup_height = popup_img.get_size()
+        
+        # Create popup background
+        popup_rect = pygame.Rect((WIDTH - popup_width) // 2, (HEIGHT - popup_height) // 2, popup_width, popup_height)
+        
+        # Store current screen content
+        screen_backup = screen.copy()
+        
+        # Create semi-transparent overlay
+        overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 128))  # Semi-transparent black
+        
+        # Display the popup
+        screen.blit(overlay, (0, 0))
+        screen.blit(popup_img, popup_rect)
+        
+        pygame.display.flip()
+        
+        # Wait for the specified time while handling events
+        start_time = pygame.time.get_ticks()
+        while pygame.time.get_ticks() - start_time < display_time:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    pygame.quit()
+                    sys.exit()
+            pygame.time.wait(10)  # Small delay to prevent high CPU usage
+        
+        # Restore screen content
+        screen.blit(screen_backup, (0, 0))
+        
+    except pygame.error as e:
+        print(f"Could not load image {image_filename}: {e}")
+        # Fallback to text-only popup
+        show_popup(message)
+
 def show_popup(message, color=(0, 0, 0)):
+    """Fallback text-only popup"""
     popup_width, popup_height = 320, 120
     popup_rect = pygame.Rect((WIDTH - popup_width) // 2, (HEIGHT - popup_height) // 2, popup_width, popup_height)
     font_popup = pygame.font.SysFont(None, 54, bold=True)
@@ -346,12 +390,6 @@ while True:
     timer_render = font_timer.render(f"Time left: {remaining}s", True, timer_color)
     screen.blit(timer_render, (WIDTH - 220, 10))
     
-    # Show status if all players answered
-    if status.get('all_answered'):
-        font_status = pygame.font.SysFont(None, 30)
-        status_render = font_status.render("All players answered! Moving to next...", True, (0, 150, 0))
-        screen.blit(status_render, (WIDTH // 2 - status_render.get_width() // 2, 65))
-
     # Handle events
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
@@ -373,33 +411,20 @@ while True:
                     total_points = result.get('points_earned', 0)
                     
                     if result.get('first_correct'):
-                        show_popup(f"Correct! +{time_points} pts (time) + {bonus_points} pts (first) = {total_points} pts!", color=(255, 215, 0))
+                        show_popup_with_image("", "correct.png", display_time=1000)
                     else:
-                        show_popup(f"Correct! +{time_points} pts (time)", color=(0, 180, 0))
+                        show_popup_with_image("", "correct.png", display_time=1000)
                 elif result:
-                    show_popup("Wrong! +0 pts", color=(200, 0, 0))
+                    show_popup_with_image("", "wrong.png", display_time=1000)
                 else:
                     show_popup("No Response", color=(100, 100, 100))
 
                 pygame.event.clear()
 
-    # Check if time ran out and show "Time's Up!" message
-    if not answered and time_remaining <= 0 and not time_up_shown and current_question:
-        show_popup("Time's Up!", color=(255, 140, 0))
-        time_up_shown = True
-    
-    # Check if all players answered and show message
-    if status.get('all_answered') and not answered and current_question:
-        show_popup("All players answered!", color=(0, 100, 255))
-    
-    last_time_remaining = time_remaining
-
     # Display current score and leaderboard
     font_score = pygame.font.SysFont(None, 30)
     score_render = font_score.render(f"Your Score: {score}", True, (0, 0, 0))
     screen.blit(score_render, (10, 10))
-    
-   
     
     # Show other players' scores
     if status.get('scores'):
@@ -411,7 +436,27 @@ while True:
                 screen.blit(other_score, (10, y_offset))
                 y_offset += 25
 
+    # Display current screen first
     pygame.display.flip()
+    
+    # Check if time ran out and show "Time's Up!" message with 3 second pause
+    if not answered and time_remaining <= 0 and not time_up_shown and current_question:
+        show_popup_with_image("", "timesup.png", display_time=3000)  # Show for 3 seconds
+        time_up_shown = True
+        # Additional pause to ensure it's visible before continuing
+        pygame.time.wait(500)  # Extra half second pause
+    
+    # Check if all players answered and show message
+    if status.get('all_answered') and not answered and current_question:
+        show_popup_with_image("", "roundcompleted.png", display_time=1500)  # Show for 1.5 seconds
+    
+    # Add pause between rounds when moving to next question
+    if last_question_id != current_question.get('question_id') and last_question_id is not None:
+        # Show transition message between rounds
+        pygame.time.wait(800)  # Longer pause between rounds
+    
+    last_time_remaining = time_remaining
+
     clock.tick(FPS)
 
 # Game ended
