@@ -37,6 +37,9 @@ game_state = {
     'player_scores': {},
     'connected_players': set(),
     'game_started': False,
+    'countdown_started': False,
+    'countdown_start_time': None,
+    'countdown_duration': 3,  # 3 seconds countdown
     'game_start_time': None,
     'question_start_time': None,
     'current_question_number': 0,
@@ -45,7 +48,9 @@ game_state = {
     'players_ready': set(),
     'game_finished': False,
     'first_correct_answer': None,  # Track who answered first for current question
-    'answered_players': set()  # Track who has answered current question
+    'answered_players': set(),
+    'last_heartbeat': {},  # Track last heartbeat from each player
+    'heartbeat_timeout': 10  # Seconds before considering a player disconnected
 }
 
 def generate_new_question():
@@ -71,9 +76,16 @@ def generate_new_question():
         "options": options
     }
 
+def start_countdown():
+    """Start the 3-second countdown before game begins"""
+    game_state['countdown_started'] = True
+    game_state['countdown_start_time'] = time.time()
+    print(f"Starting 3-second countdown with {len(game_state['connected_players'])} players!")
+
 def start_game():
     """Start the game timer and initialize first question"""
     game_state['game_started'] = True
+    game_state['countdown_started'] = False
     game_state['game_start_time'] = time.time()
     game_state['current_question_number'] = 1
     game_state['current_question'] = generate_new_question()
@@ -81,49 +93,80 @@ def start_game():
     print(f"Game started with {len(game_state['connected_players'])} players!")
 
 def check_and_start_game():
-    """Check if we have enough players to start the game"""
-    if not game_state['game_started'] and len(game_state['connected_players']) >= REQUIRED_PLAYERS:
-        start_game()
+    """Check if we have enough players to start the countdown"""
+    if not game_state['countdown_started'] and not game_state['game_started'] and len(game_state['connected_players']) >= REQUIRED_PLAYERS:
+        start_countdown()
 
 @app.route('/join', methods=['POST'])
 def join_game():
     """Player joins the game lobby"""
     data = request.get_json()
-    player_id = data.get('player_username', data.get('player_id', 'anonymous'))  # Accept both field names
+    player_id = data.get('player_username', data.get('player_id', 'anonymous'))
     
-    print(f"Player {player_id} attempting to join. Current players: {list(game_state['connected_players'])}")
+    print(f"Player {player_id} attempting to join...")
     
     # If game is finished, reset it automatically
-    if game_state.get('game_finished', False):
+    if game_state['game_finished']:
+        print("Previous game finished, resetting for new players...")
         reset_game()
     
-    if player_id in game_state['connected_players']:
-        print(f"Player {player_id} already connected")
-        return jsonify({'status': 'already_connected', 'message': 'Player already connected'})
-    
+    # Add player to the game
     game_state['connected_players'].add(player_id)
     game_state['player_scores'][player_id] = 0
+    game_state['last_heartbeat'][player_id] = time.time()  # Record initial heartbeat
     
     print(f"Player {player_id} joined. Total players: {len(game_state['connected_players'])}")
     
+    # Check if we can start the countdown
     check_and_start_game()
     
     return jsonify({
         'status': 'joined',
         'player_count': len(game_state['connected_players']),
-        'game_started': game_state['game_started']
+        'required_players': REQUIRED_PLAYERS
     })
 
 @app.route('/status', methods=['GET'])
 def get_game_status():
-    """Get current game status"""
+    """Get current game status and record heartbeat"""
+    # Get player from query parameter or use 'heartbeat' as default
+    player_id = request.args.get('player_id', 'heartbeat')
+    
+    # Record heartbeat if this is from a specific player
+    if player_id != 'heartbeat' and player_id in game_state['connected_players']:
+        game_state['last_heartbeat'][player_id] = time.time()
+    
+    # Check for disconnected players
+    check_disconnected_players()
+    
+    # Handle countdown phase
+    if game_state['countdown_started'] and not game_state['game_started']:
+        current_time = time.time()
+        countdown_elapsed = current_time - game_state['countdown_start_time']
+        countdown_remaining = max(0, game_state['countdown_duration'] - countdown_elapsed)
+        
+        # Check if countdown is finished
+        if countdown_remaining <= 0:
+            start_game()
+            # Fall through to game status below
+        else:
+            return jsonify({
+                'status': 'countdown',
+                'countdown_remaining': countdown_remaining,
+                'player_count': len(game_state['connected_players']),
+                'required_players': REQUIRED_PLAYERS,
+                'game_started': False,
+                'countdown_started': True
+            })
+    
     if not game_state['game_started']:
         return jsonify({
             'status': 'waiting',
             'player_count': len(game_state['connected_players']),
             'players_needed': max(0, REQUIRED_PLAYERS - len(game_state['connected_players'])),
             'required_players': REQUIRED_PLAYERS,
-            'game_started': False
+            'game_started': False,
+            'countdown_started': game_state['countdown_started']
         })
     
     current_time = time.time()
@@ -188,66 +231,132 @@ def get_question():
 @app.route('/answer', methods=['POST'])
 def post_answer():
     data = request.get_json()
-    player_id = data.get('player_username', data.get('player_id', 'anonymous'))  # Accept both field names
-    player_answer = data.get('answer')
-
-    if player_id not in game_state['player_scores']:
-        game_state['player_scores'][player_id] = 0
-
-    # Check if player already answered this question
+    player_id = data.get('player_username', data.get('player_id', 'anonymous'))
+    question_id = data.get('question_id')
+    user_answer = data.get('answer')
+    
+    print(f"Player {player_id} answered: {user_answer} for question {question_id}")
+    
+    if not game_state['game_started'] or game_state['game_finished']:
+        return jsonify({'status': 'game_not_active'})
+    
+    if question_id != game_state['question_id_counter']:
+        return jsonify({'status': 'question_expired'})
+    
     if player_id in game_state['answered_players']:
-        return jsonify({
-            'correct': False,
-            'new_score': game_state['player_scores'][player_id],
-            'all_scores': game_state['player_scores'],
-            'message': 'Already answered this question'
-        })
-
-    # Mark player as having answered
+        return jsonify({'status': 'already_answered'})
+    
+    # Calculate time-based points
+    current_time = time.time()
+    elapsed_time = current_time - game_state['question_start_time']
+    time_remaining = max(0, game_state['question_duration'] - elapsed_time)
+    
+    # Points = time remaining * 10 (e.g., 8 seconds left = 80 points)
+    time_based_points = int(time_remaining * 10)
+    
     game_state['answered_players'].add(player_id)
     
-    is_correct = (player_answer == game_state['current_correct_answer'])
-    bonus_points = 0
-    is_first_correct = False
+    is_correct = user_answer == game_state['current_correct_answer']
     
     if is_correct:
-        # Base points for correct answer
-        game_state['player_scores'][player_id] += 100
-        
         # Check if this is the first correct answer
-        if game_state['first_correct_answer'] is None:
+        is_first_correct = game_state['first_correct_answer'] is None
+        if is_first_correct:
             game_state['first_correct_answer'] = player_id
-            game_state['player_scores'][player_id] += 50  # Bonus for first correct
-            bonus_points = 50
-            is_first_correct = True
-
-    response = {
-        'correct': is_correct,
-        'new_score': game_state['player_scores'][player_id],
-        'all_scores': game_state['player_scores'],
-        'first_correct': is_first_correct,
-        'bonus_points': bonus_points
-    }
-    
-    return jsonify(response)
+            
+        # Calculate final score
+        base_points = time_based_points
+        bonus_points = 50 if is_first_correct else 0  # First answer bonus
+        total_points = base_points + bonus_points
+        
+        game_state['player_scores'][player_id] = game_state['player_scores'].get(player_id, 0) + total_points
+        
+        print(f"Player {player_id} correct! Time remaining: {time_remaining:.1f}s = {base_points} pts"
+              + (f" + {bonus_points} bonus = {total_points} total" if bonus_points > 0 else f" = {total_points} total"))
+        
+        return jsonify({
+            'status': 'correct',
+            'correct': True,
+            'new_score': game_state['player_scores'][player_id],
+            'points_earned': total_points,
+            'time_points': base_points,
+            'bonus_points': bonus_points,
+            'first_correct': is_first_correct,
+            'time_remaining': time_remaining
+        })
+    else:
+        print(f"Player {player_id} incorrect answer")
+        return jsonify({
+            'status': 'incorrect',
+            'correct': False,
+            'new_score': game_state['player_scores'].get(player_id, 0),
+            'points_earned': 0,
+            'time_remaining': time_remaining
+        })
 
 def reset_game():
     """Reset the game state for a new game"""
+    # Keep connected players but reset everything else
+    connected_players = game_state['connected_players'].copy()
+    
     game_state.update({
         'question_id_counter': 0,
         'current_question': None,
         'current_correct_answer': None,
-        'player_scores': {player: 0 for player in game_state['connected_players']},
+        'player_scores': {player: 0 for player in connected_players},
+        'connected_players': connected_players,
         'game_started': False,
+        'countdown_started': False,
+        'countdown_start_time': None,
         'game_start_time': None,
         'question_start_time': None,
         'current_question_number': 0,
         'players_ready': set(),
         'game_finished': False,
         'first_correct_answer': None,
-        'answered_players': set()
+        'answered_players': set(),
+        'last_heartbeat': {player: time.time() for player in connected_players}  # Reset heartbeats
     })
-    print("Game reset - ready for new players!")
+    print(f"Game reset - ready for {len(connected_players)} players!")
+
+def check_disconnected_players():
+    """Remove players who haven't sent heartbeat recently"""
+    current_time = time.time()
+    disconnected_players = []
+    
+    for player in list(game_state['connected_players']):
+        last_seen = game_state['last_heartbeat'].get(player, current_time)
+        if current_time - last_seen > game_state['heartbeat_timeout']:
+            disconnected_players.append(player)
+    
+    # Remove disconnected players
+    for player in disconnected_players:
+        print(f"Player {player} disconnected (timeout)")
+        game_state['connected_players'].discard(player)
+        game_state['last_heartbeat'].pop(player, None)
+        game_state['answered_players'].discard(player)
+        
+        # Remove from player scores but keep the score for display
+        # game_state['player_scores'].pop(player, None)
+    
+    # If all players disconnected during an active game, reset
+    if len(game_state['connected_players']) == 0 and (game_state['game_started'] or game_state['countdown_started']):
+        print("All players disconnected! Resetting game...")
+        reset_game()
+        return True
+    
+    return len(disconnected_players) > 0
+
+def heartbeat_monitor():
+    """Background thread to monitor player connections"""
+    while True:
+        time.sleep(5)  # Check every 5 seconds
+        check_disconnected_players()
+
+# Start heartbeat monitoring thread
+heartbeat_thread = threading.Thread(target=heartbeat_monitor, daemon=True)
+heartbeat_thread.start()
+print("Heartbeat monitoring started")
 
 if __name__ == '__main__':
     print("Starting Color Tap Battle Server...")

@@ -119,12 +119,14 @@ class ClientInterface:
             return None
 
     def get_game_status(self):
-        """Get current game status and player info"""
+        """Get current game status and send heartbeat"""
         try:
-            response = requests.get(f"{self.server_url}/status")
+            # Send player_id as query parameter for heartbeat tracking
+            response = requests.get(f"{self.server_url}/status", params={'player_id': self.player_username})
             response.raise_for_status()
             return response.json()
-        except requests.exceptions.RequestException:
+        except requests.exceptions.RequestException as e:
+            print(f"Failed to get status: {e}")
             return None
 
     def get_question(self):
@@ -143,6 +145,60 @@ class ClientInterface:
             return response.json()
         except requests.exceptions.RequestException:
             return None
+def show_countdown_screen(client):
+    """Display 3-second countdown before game starts"""
+    font_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../assets/LuckiestGuy-Regular.ttf'))
+    font_countdown = pygame.font.Font(font_path, 120)
+    font_message = pygame.font.Font(font_path, 60)
+    
+    while True:
+        status = client.get_game_status()
+        if not status:
+            show_popup("Lost connection to server!", color=(255, 0, 0))
+            pygame.quit()
+            sys.exit()
+        
+        if status.get('status') == 'countdown':
+            countdown_remaining = status.get('countdown_remaining', 0)
+            countdown_number = max(1, int(countdown_remaining) + 1)
+            
+            # Fill screen with white background
+            screen.fill((255, 255, 255))
+            
+            # Show "GET READY!" message
+            ready_msg = font_message.render("GET READY!", True, (200, 0, 0))
+            screen.blit(ready_msg, (WIDTH // 2 - ready_msg.get_width() // 2, HEIGHT // 2 - 120))
+            
+            # Show countdown number
+            if countdown_number <= 3:
+                # Color changes: 3=red, 2=orange, 1=green
+                colors = {3: (255, 0, 0), 2: (255, 140, 0), 1: (0, 200, 0)}
+                countdown_color = colors.get(countdown_number, (0, 0, 0))
+                
+                countdown_text = font_countdown.render(str(countdown_number), True, countdown_color)
+                screen.blit(countdown_text, (WIDTH // 2 - countdown_text.get_width() // 2, HEIGHT // 2 - 30))
+            
+            # Show player count
+            font_info = pygame.font.Font(font_path, 30)
+            player_count = status.get('player_count', 0)
+            players_msg = font_info.render(f"Players Ready: {player_count}", True, (100, 100, 100))
+            screen.blit(players_msg, (WIDTH // 2 - players_msg.get_width() // 2, HEIGHT // 2 + 100))
+            
+        elif status.get('game_started'):
+            print("Countdown finished! Starting game...")
+            break
+        else:
+            # Should not happen, but handle gracefully
+            break
+            
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                sys.exit()
+        
+        pygame.display.flip()
+        clock.tick(60)  # Higher FPS for smooth countdown
+
 
 def show_lobby_screen(client):
     """Display waiting screen until enough players join"""
@@ -175,8 +231,8 @@ def show_lobby_screen(client):
         
         print(f"Lobby status: {status}")  # Debug output
         
-        if status.get('game_started'):
-            print("Game started! Exiting lobby...")
+        if status.get('countdown_started') or status.get('game_started'):
+            print("Countdown started or game started! Exiting lobby...")
             break
             
         # Draw background image
@@ -193,7 +249,7 @@ def show_lobby_screen(client):
             need_msg = font_players.render(f"Need {players_needed} more player(s)", True, (255, 255, 255))
             screen.blit(need_msg, (100, HEIGHT - 80))
         else:
-            ready_msg = font_players.render("Starting game...", True, (0, 255, 0))
+            ready_msg = font_players.render("Starting countdown...", True, (0, 255, 0))
             screen.blit(ready_msg, (100, HEIGHT - 80))
         
         for event in pygame.event.get():
@@ -220,6 +276,9 @@ show_instructions_modal()
 # Show lobby and wait for game to start
 show_lobby_screen(client)
 
+# Show countdown screen
+show_countdown_screen(client)
+
 def get_synchronized_question():
     """Get the current synchronized question from server"""
     global current_question, answered, last_question_id, time_up_shown
@@ -231,6 +290,7 @@ def get_synchronized_question():
         time_up_shown = False  # Reset time up flag for new question
         return True
     return False
+
 
 # Game loop
 while True:
@@ -308,12 +368,16 @@ while True:
                 
                 if result and result.get('correct'):
                     score = result.get('new_score', score)
+                    time_points = result.get('time_points', 0)
+                    bonus_points = result.get('bonus_points', 0)
+                    total_points = result.get('points_earned', 0)
+                    
                     if result.get('first_correct'):
-                        show_popup(f"Correct! +{100 + result.get('bonus_points', 0)} pts (First!)", color=(255, 215, 0))
+                        show_popup(f"Correct! +{time_points} pts (time) + {bonus_points} pts (first) = {total_points} pts!", color=(255, 215, 0))
                     else:
-                        show_popup("Correct! +100 pts", color=(0, 180, 0))
+                        show_popup(f"Correct! +{time_points} pts (time)", color=(0, 180, 0))
                 elif result:
-                    show_popup("Wrong!", color=(200, 0, 0))
+                    show_popup("Wrong! +0 pts", color=(200, 0, 0))
                 else:
                     show_popup("No Response", color=(100, 100, 100))
 
@@ -335,10 +399,7 @@ while True:
     score_render = font_score.render(f"Your Score: {score}", True, (0, 0, 0))
     screen.blit(score_render, (10, 10))
     
-    # Show scoring info
-    font_info = pygame.font.SysFont(None, 20)
-    info_render = font_info.render("Correct: +100 pts | First Correct: +150 pts", True, (100, 100, 100))
-    screen.blit(info_render, (10, 40))
+   
     
     # Show other players' scores
     if status.get('scores'):
