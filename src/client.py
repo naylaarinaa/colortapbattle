@@ -408,10 +408,60 @@ while True:
         show_popup(f"Game Over!\n\nFinal Scores:\n{scores_text}", color=(0, 0, 200))
         break
     
-    # Handle time's up state
-    if status.get('status') == 'timesup':
+    # Handle time's up state - show different screens based on whether player answered
+    if status.get('status') == 'timesup' and not answered:
         show_timesup_screen(client)
         continue  # Go back to main loop to get next status
+    elif status.get('status') == 'timesup' and answered:
+        # Player has answered, show round completed immediately while timesup is active
+        font_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../assets/LuckiestGuy-Regular.ttf'))
+        
+        while True:
+            status = client.get_game_status()
+            if not status:
+                show_popup("Lost connection to server!", color=(255, 0, 0))
+                pygame.quit()
+                sys.exit()
+            
+            if status.get('status') == 'timesup':
+                # Show round completed image while time's up is active
+                try:
+                    roundcompleted_img_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../assets/roundcompleted.png'))
+                    roundcompleted_img = pygame.image.load(roundcompleted_img_path).convert_alpha()
+                    roundcompleted_img = pygame.transform.smoothscale(roundcompleted_img, (WIDTH, HEIGHT))
+                    screen.blit(roundcompleted_img, (0, 0))
+                except pygame.error as e:
+                    # Fallback to text display
+                    screen.fill((0, 200, 0))  # Green background
+                    font_message = pygame.font.Font(font_path, 60)
+                    completed_msg = font_message.render("ROUND COMPLETED!", True, (255, 255, 255))
+                    screen.blit(completed_msg, (WIDTH // 2 - completed_msg.get_width() // 2, HEIGHT // 2 - 50))
+                
+                # Show countdown timer (same as time's up screen)
+                timesup_remaining = status.get('timesup_remaining', 0)
+                font_small = pygame.font.Font(font_path, 30)
+                remaining_text = font_small.render(f"Next question in: {int(timesup_remaining) + 1}", True, (255, 255, 255))
+                screen.blit(remaining_text, (WIDTH // 2 - remaining_text.get_width() // 2, HEIGHT - 100))
+                
+            elif status.get('status') == 'playing':
+                print("Round completed screen finished! Starting next question...")
+                break
+            elif status.get('status') == 'finished':
+                print("Game finished during round completed screen!")
+                break
+            else:
+                # Should not happen, but handle gracefully
+                break
+                
+            # Handle quit events while showing round completed
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    pygame.quit()
+                    sys.exit()
+            
+            pygame.display.flip()
+            clock.tick(60)  # Higher FPS for smooth display
+        continue
     
     # Get synchronized question
     get_synchronized_question()
@@ -487,13 +537,7 @@ while True:
     # Display current screen first
     pygame.display.flip()
     
-    # Check if time ran out and show "Time's Up!" message with 3 second pause
-    if not answered and time_remaining <= 0 and not time_up_shown and current_question:
-        show_popup_with_image("", "timesup.png", display_time=3000)  # Show for 3 seconds
-        time_up_shown = True
-        # Additional pause to ensure it's visible before continuing
-        pygame.time.wait(3000)  # Extra half second pause
-    
+    # Remove the old time up handling code since it's now handled above
     # Check if all players answered and show message
     if status.get('all_answered') and not answered and current_question:
         show_popup_with_image("", "roundcompleted.png", display_time=1500)  # Show for 1.5 seconds
