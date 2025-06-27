@@ -3,3 +3,4 @@ Flask
 Flask-SocketIO
 eventlet
 jsonschema
+requests
