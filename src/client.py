@@ -323,6 +323,63 @@ show_lobby_screen(client)
 # Show countdown screen
 show_countdown_screen(client)
 
+def show_timesup_screen(client):
+    """Display time's up screen with image"""
+    font_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../assets/LuckiestGuy-Regular.ttf'))
+    font_message = pygame.font.Font(font_path, 60)
+    
+    # Load time's up image
+    try:
+        timesup_img_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../assets/timesup.png'))
+        timesup_img = pygame.image.load(timesup_img_path).convert_alpha()
+        timesup_img = pygame.transform.smoothscale(timesup_img, (WIDTH, HEIGHT))
+        use_image = True
+    except pygame.error as e:
+        print(f"Could not load timesup.png: {e}")
+        use_image = False
+    
+    while True:
+        status = client.get_game_status()
+        if not status:
+            show_popup("Lost connection to server!", color=(255, 0, 0))
+            pygame.quit()
+            sys.exit()
+        
+        if status.get('status') == 'timesup':
+            timesup_remaining = status.get('timesup_remaining', 0)
+            
+            if use_image:
+                # Show time's up image
+                screen.blit(timesup_img, (0, 0))
+            else:
+                # Fallback to text display
+                screen.fill((200, 0, 0))  # Red background
+                timesup_msg = font_message.render("TIME'S UP!", True, (255, 255, 255))
+                screen.blit(timesup_msg, (WIDTH // 2 - timesup_msg.get_width() // 2, HEIGHT // 2 - 50))
+            
+            # Show countdown (optional - shows remaining time of time's up display)
+            font_small = pygame.font.Font(font_path, 30)
+            remaining_text = font_small.render(f"Next question in: {int(timesup_remaining) + 1}", True, (255, 255, 255))
+            screen.blit(remaining_text, (WIDTH // 2 - remaining_text.get_width() // 2, HEIGHT - 100))
+            
+        elif status.get('status') == 'playing':
+            print("Time's up screen finished! Starting next question...")
+            break
+        elif status.get('status') == 'finished':
+            print("Game finished during time's up screen!")
+            break
+        else:
+            # Should not happen, but handle gracefully
+            break
+            
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                sys.exit()
+        
+        pygame.display.flip()
+        clock.tick(60)  # Higher FPS for smooth display
+
 def get_synchronized_question():
     """Get the current synchronized question from server"""
     global current_question, answered, last_question_id, time_up_shown
@@ -338,7 +395,6 @@ def get_synchronized_question():
 
 # Game loop
 while True:
-    
     # Get game status to check if game is still running
     status = client.get_game_status()
     if not status:
@@ -347,25 +403,17 @@ while True:
     
     if status.get('status') == 'finished':
         # Show final scores
-        screen.fill((255, 255, 255))
-        font_end = pygame.font.SysFont(None, 60)
-        end_render = font_end.render("Game Finished!", True, (0, 0, 0))
-        screen.blit(end_render, (WIDTH // 2 - end_render.get_width() // 2, HEIGHT // 2 - 60))
-        
         final_scores = status.get('final_scores', {})
-        y_offset = HEIGHT // 2
-        font_scores = pygame.font.SysFont(None, 40)
-        for player, player_score in final_scores.items():
-            score_text = f"{player}: {player_score}"
-            score_render = font_scores.render(score_text, True, (0, 0, 0))
-            screen.blit(score_render, (WIDTH // 2 - score_render.get_width() // 2, y_offset))
-            y_offset += 40
-        
-        pygame.display.flip()
-        pygame.time.wait(5000)
+        scores_text = "\n".join([f"{player}: {score}" for player, score in final_scores.items()])
+        show_popup(f"Game Over!\n\nFinal Scores:\n{scores_text}", color=(0, 0, 200))
         break
     
-    # Get current question
+    # Handle time's up state
+    if status.get('status') == 'timesup':
+        show_timesup_screen(client)
+        continue  # Go back to main loop to get next status
+    
+    # Get synchronized question
     get_synchronized_question()
     
     screen.fill((255, 255, 255))
@@ -444,7 +492,7 @@ while True:
         show_popup_with_image("", "timesup.png", display_time=3000)  # Show for 3 seconds
         time_up_shown = True
         # Additional pause to ensure it's visible before continuing
-        pygame.time.wait(500)  # Extra half second pause
+        pygame.time.wait(3000)  # Extra half second pause
     
     # Check if all players answered and show message
     if status.get('all_answered') and not answered and current_question:
@@ -462,3 +510,4 @@ while True:
 # Game ended
 pygame.quit()
 sys.exit()
+

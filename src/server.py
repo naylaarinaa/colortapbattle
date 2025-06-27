@@ -50,7 +50,10 @@ game_state = {
     'first_correct_answer': None,  # Track who answered first for current question
     'answered_players': set(),
     'last_heartbeat': {},  # Track last heartbeat from each player
-    'heartbeat_timeout': 10  # Seconds before considering a player disconnected
+    'heartbeat_timeout': 10,  # Seconds before considering a player disconnected
+    'timesup_state': False,  # NEW: Track if we're in "time's up" state
+    'timesup_start_time': None,  # NEW: When time's up state started
+    'timesup_duration': 3  # NEW: How long to show "time's up" (3 seconds)
 }
 
 def generate_new_question():
@@ -169,14 +172,77 @@ def get_game_status():
             'countdown_started': game_state['countdown_started']
         })
     
+    # Handle "Time's Up!" state
+    if game_state['timesup_state']:
+        current_time = time.time()
+        timesup_elapsed = current_time - game_state['timesup_start_time']
+        timesup_remaining = max(0, game_state['timesup_duration'] - timesup_elapsed)
+        
+        # Check if time's up display is finished
+        if timesup_remaining <= 0:
+            # Move to next question or end game
+            game_state['timesup_state'] = False
+            game_state['timesup_start_time'] = None
+            
+            if game_state['current_question_number'] < game_state['max_questions']:
+                game_state['current_question_number'] += 1
+                game_state['current_question'] = generate_new_question()
+                game_state['question_start_time'] = time.time()
+                print(f"Moving to question {game_state['current_question_number']}")
+            else:
+                # Game finished
+                game_state['game_finished'] = True
+                return jsonify({
+                    'status': 'finished',
+                    'game_started': True,
+                    'final_scores': game_state['player_scores']
+                })
+        else:
+            return jsonify({
+                'status': 'timesup',
+                'timesup_remaining': timesup_remaining,
+                'current_question_number': game_state['current_question_number'],
+                'max_questions': game_state['max_questions'],
+                'game_started': True
+            })
+    
     current_time = time.time()
     question_elapsed = current_time - game_state['question_start_time']
     
     # Check if all players have answered
     all_answered = len(game_state['answered_players']) >= len(game_state['connected_players'])
     
-    # Check if we need to move to next question (either time up or all answered)
-    if question_elapsed >= game_state['question_duration'] or all_answered:
+    # Check if we need to move to "time's up" state or next question
+    if question_elapsed >= game_state['question_duration']:
+        # Time's up! Start the time's up display
+        if not all_answered:  # Only show "time's up" if not all players answered
+            game_state['timesup_state'] = True
+            game_state['timesup_start_time'] = time.time()
+            print(f"Time's up for question {game_state['current_question_number']}! Showing time's up screen...")
+            return jsonify({
+                'status': 'timesup',
+                'timesup_remaining': game_state['timesup_duration'],
+                'current_question_number': game_state['current_question_number'],
+                'max_questions': game_state['max_questions'],
+                'game_started': True
+            })
+        else:
+            # All answered, move directly to next question
+            if game_state['current_question_number'] < game_state['max_questions']:
+                game_state['current_question_number'] += 1
+                game_state['current_question'] = generate_new_question()
+                game_state['question_start_time'] = current_time
+                question_elapsed = 0
+            else:
+                # Game finished
+                game_state['game_finished'] = True
+                return jsonify({
+                    'status': 'finished',
+                    'game_started': True,
+                    'final_scores': game_state['player_scores']
+                })
+    elif all_answered:
+        # All players answered before time up, move to next question immediately
         if game_state['current_question_number'] < game_state['max_questions']:
             game_state['current_question_number'] += 1
             game_state['current_question'] = generate_new_question()
@@ -315,7 +381,10 @@ def reset_game():
         'game_finished': False,
         'first_correct_answer': None,
         'answered_players': set(),
-        'last_heartbeat': {player: time.time() for player in connected_players}  # Reset heartbeats
+        'last_heartbeat': {player: time.time() for player in connected_players},  # Reset heartbeats
+        'timesup_state': False,  # Reset time's up state
+        'timesup_start_time': None,
+        'timesup_duration': 3
     })
     print(f"Game reset - ready for {len(connected_players)} players!")
 
