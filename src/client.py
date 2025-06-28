@@ -252,7 +252,60 @@ except pygame.error:
         c = int(220 + (35 * y / HEIGHT))
         pygame.draw.line(main_bg, (c, c, 255), (0, y), (WIDTH, y))
 
-player_username = input("Masukkan Username Anda: ")
+def get_username_screen():
+    font_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../assets/LuckiestGuy-Regular.ttf'))
+    font = pygame.font.Font(font_path, 48)
+    input_box = pygame.Rect(WIDTH // 2 - 180, HEIGHT // 2, 360, 60)
+    color_inactive = pygame.Color('lightskyblue3')
+    color_active = pygame.Color('dodgerblue2')
+    color = color_inactive
+    active = False
+    username = ''
+    done = False
+
+    while not done:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                # If the user clicked on the input_box rect.
+                if input_box.collidepoint(event.pos):
+                    active = not active
+                else:
+                    active = False
+                color = color_active if active else color_inactive
+            if event.type == pygame.KEYDOWN:
+                if active:
+                    if event.key == pygame.K_RETURN:
+                        if username.strip():
+                            done = True
+                    elif event.key == pygame.K_BACKSPACE:
+                        username = username[:-1]
+                    elif len(username) < 16 and event.unicode.isprintable():
+                        username += event.unicode
+
+        screen.fill((255, 255, 255))
+        title = font.render("Masukkan Username Anda:", True, (0, 0, 0))
+        screen.blit(title, (WIDTH // 2 - title.get_width() // 2, HEIGHT // 2 - 100))
+
+        # Render the current text.
+        txt_surface = font.render(username, True, (0, 0, 0))
+        width = max(360, txt_surface.get_width()+20)
+        input_box.w = width
+        pygame.draw.rect(screen, color, input_box, 4, border_radius=10)
+        screen.blit(txt_surface, (input_box.x+10, input_box.y+10))
+
+        # Draw hint if empty
+        if not username:
+            hint_font = pygame.font.Font(font_path, 28)
+            hint = hint_font.render("max 16 karakter", True, (180, 180, 180))
+            screen.blit(hint, (input_box.x+12, input_box.y+18))
+
+        pygame.display.flip()
+        clock.tick(30)
+    return username.strip()
+
+player_username = get_username_screen()
 client = ClientInterface(player_username)
 score, answered, current_question = 0, False, {}
 last_question_id, last_time_remaining, time_up_shown = None, None, False
