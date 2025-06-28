@@ -1,14 +1,9 @@
 from socket import *
-import socket
-import threading
-import sys
-import logging
-import signal
+import socket, threading, sys, logging, signal
 from http import HttpServer
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Ambil jumlah pemain dari argumen, default 2, maksimal 10
 try:
     required_players = min(max(int(sys.argv[1]), 2), 10) if len(sys.argv) > 1 else 2
 except Exception:
@@ -19,8 +14,7 @@ httpserver = HttpServer(required_players=required_players)
 class ProcessTheClient(threading.Thread):
     def __init__(self, connection, address):
         super().__init__(daemon=True)
-        self.connection = connection
-        self.address = address
+        self.connection, self.address = connection, address
 
     def run(self):
         self.connection.settimeout(1.0)
@@ -50,31 +44,29 @@ class ProcessTheClient(threading.Thread):
 class Server(threading.Thread):
     def __init__(self):
         super().__init__(daemon=False)
-        self.clients = []
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.the_clients, self.my_socket = [], socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.my_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.running = True
 
     def run(self):
         try:
-            self.sock.bind(('0.0.0.0', 8889))
-            self.sock.listen(5)
-            self.sock.settimeout(1.0)
+            self.my_socket.bind(('0.0.0.0', 8889))
+            self.my_socket.listen(5)
+            self.my_socket.settimeout(1.0)
             logging.info("Color Tap Battle Server started on 0.0.0.0:8889")
             logging.info(f"Required players to start: {required_players}")
             while self.running:
                 try:
-                    conn, addr = self.sock.accept()
-                    logging.info(f"New connection from {addr}")
-                    clt = ProcessTheClient(conn, addr)
+                    self.connection, self.client_address = self.my_socket.accept()
+                    logging.info(f"New connection from {self.client_address}")
+                    clt = ProcessTheClient(self.connection, self.client_address)
                     clt.start()
-                    self.clients.append(clt)
-                    self.clients = [t for t in self.clients if t.is_alive()]
+                    self.the_clients.append(clt)
+                    self.the_clients = [t for t in self.the_clients if t.is_alive()]
                 except socket.timeout:
                     continue
                 except OSError as e:
-                    if self.running:
-                        logging.error(f"Socket error: {e}")
+                    if self.running: logging.error(f"Socket error: {e}")
                     break
         except Exception as e:
             logging.error(f"Server error: {e}")
@@ -84,12 +76,12 @@ class Server(threading.Thread):
     def stop(self):
         logging.info("Stopping server...")
         self.running = False
-        for t in self.clients: t.join(timeout=1.0)
+        for t in self.the_clients: t.join(timeout=1.0)
         self.cleanup()
 
     def cleanup(self):
         try:
-            self.sock.close()
+            self.my_socket.close()
             logging.info("Server socket closed")
         except Exception:
             pass
