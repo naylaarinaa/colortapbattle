@@ -8,7 +8,7 @@ import threading
 import time
 
 class HttpServer:
-    def __init__(self):
+    def __init__(self, required_players=2):
         self.sessions = {}
         self.types = {}
         self.types['.pdf'] = 'application/pdf'
@@ -16,7 +16,7 @@ class HttpServer:
         self.types['.txt'] = 'text/plain'
         self.types['.html'] = 'text/html'
         # Game state initialization
-        self.REQUIRED_PLAYERS = 2
+        self.REQUIRED_PLAYERS = required_players
         self.COLOR_NAMES = [
             "RED", "GREEN", "BLUE", "YELLOW", "PURPLE", "BLACK",
             "GRAY", "ORANGE", "PINK", "BROWN"
@@ -44,7 +44,10 @@ class HttpServer:
             'heartbeat_timeout': 10,
             'timesup_state': False,
             'timesup_start_time': None,
-            'timesup_duration': 3
+            'timesup_duration': 3,
+            'round_completed_state': False,
+            'round_completed_start_time': None,
+            'round_completed_duration': 1.0,  # 1 detik
         }
         self.heartbeat_thread = threading.Thread(target=self.heartbeat_monitor, daemon=True)
         self.heartbeat_thread.start()
@@ -224,6 +227,54 @@ class HttpServer:
                 'game_started': False,
                 'countdown_started': self.game_state['countdown_started']
             }
+        # Tambahan: round_completed untuk pemain yang sudah jawab
+        all_answered = len(self.game_state['answered_players']) >= len(self.game_state['connected_players'])
+
+        # ROUND COMPLETED STATE
+        if self.game_state.get('round_completed_state', False):
+            current_time = time.time()
+            elapsed = current_time - self.game_state.get('round_completed_start_time', 0)
+            if elapsed < self.game_state.get('round_completed_duration', 1.0):
+                if player_id in self.game_state['answered_players']:
+                    return {
+                        'status': 'round_completed',
+                        'current_question_number': self.game_state['current_question_number'],
+                        'max_questions': self.game_state['max_questions'],
+                        'scores': self.game_state['player_scores'],
+                        'players': list(self.game_state['connected_players']),
+                        'game_started': True
+                    }
+            else:
+                self.game_state['round_completed_state'] = False
+                self.game_state['round_completed_start_time'] = None
+                # Lanjut ke pertanyaan berikutnya
+                if self.game_state['current_question_number'] < self.game_state['max_questions']:
+                    self.game_state['current_question_number'] += 1
+                    self.game_state['current_question'] = self.generate_new_question()
+                    self.game_state['question_start_time'] = current_time
+                    self.game_state['answered_players'] = set()
+                else:
+                    self.game_state['game_finished'] = True
+                    return {
+                        'status': 'finished',
+                        'game_started': True,
+                        'final_scores': self.game_state['player_scores']
+                    }
+
+        # Jika semua pemain sudah menjawab, mulai round_completed_state
+        if all_answered and not self.game_state.get('round_completed_state', False):
+            self.game_state['round_completed_state'] = True
+            self.game_state['round_completed_start_time'] = time.time()
+            if player_id in self.game_state['answered_players']:
+                return {
+                    'status': 'round_completed',
+                    'current_question_number': self.game_state['current_question_number'],
+                    'max_questions': self.game_state['max_questions'],
+                    'scores': self.game_state['player_scores'],
+                    'players': list(self.game_state['connected_players']),
+                    'game_started': True
+                }
+
         if self.game_state['timesup_state']:
             current_time = time.time()
             timesup_elapsed = current_time - self.game_state['timesup_start_time']
@@ -252,7 +303,6 @@ class HttpServer:
                 }
         current_time = time.time()
         question_elapsed = current_time - self.game_state['question_start_time']
-        all_answered = len(self.game_state['answered_players']) >= len(self.game_state['connected_players'])
         if question_elapsed >= self.game_state['question_duration']:
             if not all_answered:
                 self.game_state['timesup_state'] = True
@@ -379,7 +429,10 @@ class HttpServer:
             'last_heartbeat': {player: time.time() for player in connected_players},
             'timesup_state': False,
             'timesup_start_time': None,
-            'timesup_duration': 3
+            'timesup_duration': 3,
+            'round_completed_state': False,
+            'round_completed_start_time': None,
+            'round_completed_duration': 1.0,  # 1 detik
         })
 
     def check_disconnected_players(self):

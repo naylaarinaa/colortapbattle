@@ -6,7 +6,20 @@ import sys
 import logging
 from http import HttpServer
 
-httpserver = HttpServer()
+# Ambil jumlah pemain dari argumen, default 2, maksimal 10
+if len(sys.argv) > 1:
+    try:
+        required_players = int(sys.argv[1])
+        if required_players < 2:
+            required_players = 2
+        elif required_players > 10:
+            required_players = 10
+    except ValueError:
+        required_players = 2
+else:
+    required_players = 2
+
+httpserver = HttpServer(required_players=required_players)
 
 
 class ProcessTheClient(threading.Thread):
