@@ -1,7 +1,8 @@
 import pygame
 import sys
 import os
-import requests
+import socket
+import json
 
 pygame.init()
 WIDTH, HEIGHT = 800, 600
@@ -23,7 +24,7 @@ def show_instructions_modal():
     instr_img = pygame.transform.smoothscale(instr_img, (WIDTH, HEIGHT))
     font_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../assets/LuckiestGuy-Regular.ttf'))
     font_button = pygame.font.Font(font_path, 38)
-    button_rect = pygame.Rect(WIDTH // 2 - 205, HEIGHT - 120, 170, 54)
+    button_rect = pygame.Rect(WIDTH // 2 - 205, HEIGHT - 115, 170, 54)
     waiting, button_clicked = True, False
     pulse, pulse_dir, pulse_active = 0, 1, False
     
@@ -116,17 +117,27 @@ def show_popup(message, color=(0, 0, 0)):
     pygame.time.wait(800)
 
 def display_color_question(question_text, color_name_for_rgb):
-    font = pygame.font.SysFont(None, 80)
+    # Pakai Luckiest Guy untuk soal
+    font_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../assets/LuckiestGuy-Regular.ttf'))
+    font = pygame.font.Font(font_path, 80)
     color_rgb = COLOR_MAP.get(color_name_for_rgb, (0, 0, 0))
-    outline = font.render(question_text, True, (0, 0, 0))
     label = font.render(question_text, True, color_rgb)
-    label_rect = label.get_rect(center=(WIDTH // 2, 100))
+    outline = font.render(question_text, True, (0, 0, 0))
+    label_rect = label.get_rect(center=(WIDTH // 2, 120))
+
+    # Background putih untuk soal
+    bg_rect = pygame.Rect(label_rect.left - 30, label_rect.top - 20, label_rect.width + 60, label_rect.height + 40)
+    pygame.draw.rect(screen, (255, 255, 255), bg_rect, border_radius=18)
+    pygame.draw.rect(screen, (200, 200, 200), bg_rect, 3, border_radius=18)
+
+    # Teks soal dengan outline
     screen.blit(outline, label_rect.move(2, 2))
     screen.blit(label, label_rect)
 
 def draw_name_options(option_names):
     positions, spacing, y = [], WIDTH // (len(option_names) + 1), 250
-    font = pygame.font.SysFont(None, 40)
+    font_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../assets/BalsamiqSans-Regular.ttf'))
+    font = pygame.font.Font(font_path, 40)
     for i, name in enumerate(option_names):
         x = spacing * (i + 1)
         rect = pygame.Rect(x - 70, y - 30, 140, 60)
@@ -146,49 +157,66 @@ def get_user_answer(mouse_pos, positions, option_names):
 class ClientInterface:
     def __init__(self, player_username):
         self.player_username = player_username
-        self.server_url = 'http://127.0.0.1:8080'
+        self.server_host = '127.0.0.1'
+        self.server_port = 8889
+
+    def send_http_request(self, request_text):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.connect((self.server_host, self.server_port))
+            s.sendall(request_text.encode())
+            response = b""
+            while True:
+                part = s.recv(4096)
+                if not part:
+                    break
+                response += part
+                if b'\r\n\r\n' in response:
+                    break
+            # Ambil body JSON dari response HTTP
+            if b'\r\n\r\n' in response:
+                body = response.split(b'\r\n\r\n', 1)[-1]
+            else:
+                body = response
+            try:
+                return json.loads(body.decode())
+            except Exception:
+                return None
 
     def join_game(self):
-        """Join the multiplayer game lobby"""
         payload = {'player_username': self.player_username}
-        print(f"Attempting to join game as {self.player_username}")
-        try:
-            response = requests.post(f"{self.server_url}/join", json=payload)
-            response.raise_for_status()
-            result = response.json()
-            print(f"Join response: {result}")
-            return result
-        except requests.exceptions.RequestException as e:
-            print(f"Failed to join game: {e}")
-            return None
+        payload_str = json.dumps(payload)
+        req = (
+            "POST /join HTTP/1.0\r\n"
+            "Content-Type: application/json\r\n"
+            f"Content-Length: {len(payload_str)}\r\n"
+            "\r\n"
+            f"{payload_str}"
+        )
+        return self.send_http_request(req)
 
     def get_game_status(self):
-        """Get current game status and send heartbeat"""
-        try:
-            # Send player_id as query parameter for heartbeat tracking
-            response = requests.get(f"{self.server_url}/status", params={'player_id': self.player_username})
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException as e:
-            print(f"Failed to get status: {e}")
-            return None
+        req = (
+            f"GET /status?player_id={self.player_username} HTTP/1.0\r\n"
+            "\r\n"
+        )
+        return self.send_http_request(req)
 
     def get_question(self):
-        try:
-            response = requests.get(f"{self.server_url}/question")
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException:
-            return None
+        req = "GET /question HTTP/1.0\r\n\r\n"
+        return self.send_http_request(req)
 
     def send_answer(self, question_id, answer):
         payload = {'player_username': self.player_username, 'question_id': question_id, 'answer': answer}
-        try:
-            response = requests.post(f"{self.server_url}/answer", json=payload)
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException:
-            return None
+        payload_str = json.dumps(payload)
+        req = (
+            "POST /answer HTTP/1.0\r\n"
+            "Content-Type: application/json\r\n"
+            f"Content-Length: {len(payload_str)}\r\n"
+            "\r\n"
+            f"{payload_str}"
+        )
+        return self.send_http_request(req)
+
 def show_countdown_screen(client):
     """Display 3-second countdown before game starts"""
     font_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../assets/LuckiestGuy-Regular.ttf'))
@@ -393,6 +421,11 @@ def get_synchronized_question():
     return False
 
 
+# Load main background image
+main_bg_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../assets/main.png'))
+main_bg = pygame.image.load(main_bg_path).convert_alpha()
+main_bg = pygame.transform.smoothscale(main_bg, (WIDTH, HEIGHT))
+
 # Game loop
 while True:
     # Get game status to check if game is still running
@@ -468,6 +501,9 @@ while True:
     
     screen.fill((255, 255, 255))
     
+    # Draw main background first
+    screen.blit(main_bg, (0, 0))
+
     # Display question progress
     if status.get('current_question_number') and status.get('max_questions'):
         font = pygame.font.SysFont(None, 36)
