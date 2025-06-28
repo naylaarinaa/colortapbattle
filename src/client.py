@@ -331,7 +331,40 @@ def show_lobby_screen(client):
         
         pygame.display.flip()
         clock.tick(10)  # Lower FPS for lobby
-player_username = input("Masukkan Usernme Anda: ")
+
+def get_synchronized_question():
+    """Get the current synchronized question from server"""
+    global current_question, answered, last_question_id, time_up_shown
+    
+    new_question = client.get_question()
+    if new_question and new_question.get('question_id'):
+        current_question_id = new_question.get('question_id')
+        
+        # Only update if it's actually a new question
+        if current_question_id != last_question_id:
+            print(f"New question received: ID {current_question_id}")
+            current_question = new_question
+            answered = False
+            last_question_id = current_question_id
+            time_up_shown = False
+            return True
+    return False
+
+# Load main background image
+try:
+    main_bg_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../assets/main.png'))
+    main_bg = pygame.image.load(main_bg_path).convert_alpha()
+    main_bg = pygame.transform.smoothscale(main_bg, (WIDTH, HEIGHT))
+except pygame.error as e:
+    print(f"Could not load main_bg.png: {e}, using default background")
+    # Create a simple gradient background as fallback
+    main_bg = pygame.Surface((WIDTH, HEIGHT))
+    for y in range(HEIGHT):
+        color_value = int(220 + (35 * y / HEIGHT))  # Gradient from light to slightly darker
+        pygame.draw.line(main_bg, (color_value, color_value, 255), (0, y), (WIDTH, y))
+
+# Initialize the client and variables BEFORE the game loop
+player_username = input("Masukkan Username Anda: ")
 client = ClientInterface(player_username)
 score, answered = 0, False
 current_question = {} 
@@ -339,7 +372,7 @@ last_question_id = None
 last_time_remaining = None
 time_up_shown = False
 
-# Initialize global variables
+# Initialize global variables (move this before show_instructions_modal)
 last_time_remaining = None
 time_up_shown = False
 
@@ -351,10 +384,12 @@ show_lobby_screen(client)
 # Show countdown screen
 show_countdown_screen(client)
 
+# Define functions before the main game loop
 def show_timesup_screen(client):
-    """Display time's up screen with image"""
+    """Display time's up screen with overlay effect for players who didn't answer"""
     font_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../assets/LuckiestGuy-Regular.ttf'))
     font_message = pygame.font.Font(font_path, 60)
+    font_small = pygame.font.Font(font_path, 30)
     
     # Load time's up image
     try:
@@ -376,19 +411,36 @@ def show_timesup_screen(client):
         if status.get('status') == 'timesup':
             timesup_remaining = status.get('timesup_remaining', 0)
             
+            # **RENDER CURRENT GAME CONTENT FIRST**
+            # Fill with main background
+            screen.fill((255, 255, 255))
+            screen.blit(main_bg, (0, 0))
+            
+            # Show current question if available
+            if current_question and current_question.get('text'):
+                display_color_question(current_question.get('text'), current_question.get('text_color'))
+                draw_name_options(current_question.get('options', []))
+            
+            # Show timer and scores
+            if status.get('current_question_number') and status.get('max_questions'):
+                font = pygame.font.SysFont(None, 36)
+                progress_render = font.render(f"Question {status['current_question_number']} of {status['max_questions']}", True, (0, 0, 0))
+                screen.blit(progress_render, (WIDTH // 2 - progress_render.get_width() // 2, 30))
+            
+            # **NOW APPLY OVERLAY EFFECT**
+            # Create semi-transparent overlay
+            overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+            overlay.fill((0, 0, 0, 128))  # Semi-transparent black
+            screen.blit(overlay, (0, 0))
+            
             if use_image:
-                # Show time's up image
+                # Show time's up image on top of overlay
                 screen.blit(timesup_img, (0, 0))
             else:
                 # Fallback to text display
-                screen.fill((200, 0, 0))  # Red background
                 timesup_msg = font_message.render("TIME'S UP!", True, (255, 255, 255))
                 screen.blit(timesup_msg, (WIDTH // 2 - timesup_msg.get_width() // 2, HEIGHT // 2 - 50))
-            
-            # Show countdown (optional - shows remaining time of time's up display)
-            font_small = pygame.font.Font(font_path, 30)
-            remaining_text = font_small.render(f"Next question in: {int(timesup_remaining) + 1}", True, (255, 255, 255))
-            screen.blit(remaining_text, (WIDTH // 2 - remaining_text.get_width() // 2, HEIGHT - 100))
+           
             
         elif status.get('status') == 'playing':
             print("Time's up screen finished! Starting next question...")
@@ -397,7 +449,6 @@ def show_timesup_screen(client):
             print("Game finished during time's up screen!")
             break
         else:
-            # Should not happen, but handle gracefully
             break
             
         for event in pygame.event.get():
@@ -406,27 +457,170 @@ def show_timesup_screen(client):
                 sys.exit()
         
         pygame.display.flip()
-        clock.tick(60)  # Higher FPS for smooth display
+        clock.tick(60)
 
-def get_synchronized_question():
-    """Get the current synchronized question from server"""
-    global current_question, answered, last_question_id, time_up_shown
-    new_question = client.get_question()
-    if new_question and new_question.get('question_id') != last_question_id:
-        current_question = new_question
-        answered = False
-        last_question_id = new_question.get('question_id')
-        time_up_shown = False  # Reset time up flag for new question
-        return True
-    return False
+def show_roundcompleted_waiting_screen(client):
+    """Display round completed screen for players who answered, waiting for others"""
+    font_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../assets/LuckiestGuy-Regular.ttf'))
+    font_message = pygame.font.Font(font_path, 40)
+    font_small = pygame.font.Font(font_path, 30)
+    
+    # Load round completed image
+    try:
+        roundcompleted_img_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../assets/roundcompleted.png'))
+        roundcompleted_img = pygame.image.load(roundcompleted_img_path).convert_alpha()
+        roundcompleted_img = pygame.transform.smoothscale(roundcompleted_img, (WIDTH, HEIGHT))
+        use_image = True
+    except pygame.error as e:
+        print(f"Could not load roundcompleted.png: {e}")
+        use_image = False
+    
+    while True:
+        status = client.get_game_status()
+        if not status:
+            show_popup("Lost connection to server!", color=(255, 0, 0))
+            pygame.quit()
+            sys.exit()
+        
+        if status.get('status') == 'roundcompleted_waiting':
+            timesup_remaining = status.get('timesup_remaining', 0)
+            waiting_for_players = status.get('waiting_for_players', [])
+            
+            # **RENDER CURRENT GAME CONTENT FIRST**
+            # Fill with main background
+            screen.fill((255, 255, 255))
+            screen.blit(main_bg, (0, 0))
+            
+            # Show current question if available
+            if current_question and current_question.get('text'):
+                display_color_question(current_question.get('text'), current_question.get('text_color'))
+                draw_name_options(current_question.get('options', []))
+            
+            # Show timer and scores
+            if status.get('current_question_number') and status.get('max_questions'):
+                font = pygame.font.SysFont(None, 36)
+                progress_render = font.render(f"Question {status['current_question_number']} of {status['max_questions']}", True, (0, 0, 0))
+                screen.blit(progress_render, (WIDTH // 2 - progress_render.get_width() // 2, 30))
+            
+            # **NOW APPLY OVERLAY EFFECT**
+            # Create semi-transparent overlay
+            overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+            overlay.fill((0, 0, 0, 128))  # Semi-transparent black
+            screen.blit(overlay, (0, 0))
+            
+            if use_image:
+                # Show round completed image on top of overlay
+                screen.blit(roundcompleted_img, (0, 0))
+            else:
+                # Fallback to text display
+                completed_msg = font_message.render("ROUND COMPLETED!", True, (255, 255, 255))
+                screen.blit(completed_msg, (WIDTH // 2 - completed_msg.get_width() // 2, HEIGHT // 2 - 100))
+                
+                waiting_msg = font_message.render("Waiting for other players...", True, (255, 255, 255))
+                screen.blit(waiting_msg, (WIDTH // 2 - waiting_msg.get_width() // 2, HEIGHT // 2 - 50))
+            
+            
+        elif status.get('status') == 'playing':
+            print("Round completed screen finished! Starting next question...")
+            break
+        elif status.get('status') == 'finished':
+            print("Game finished during round completed screen!")
+            break
+        else:
+            break
+            
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                sys.exit()
+        
+        pygame.display.flip()
+        clock.tick(60)
 
+def show_roundcompleted_all_screen(client):
+    """Display round completed screen for ALL players when everyone answered"""
+    font_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../assets/LuckiestGuy-Regular.ttf'))
+    font_message = pygame.font.Font(font_path, 50)
+    font_small = pygame.font.Font(font_path, 30)
+    
+    # Load round completed image
+    try:
+        roundcompleted_img_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../assets/roundcompleted.png'))
+        roundcompleted_img = pygame.image.load(roundcompleted_img_path).convert_alpha()
+        roundcompleted_img = pygame.transform.smoothscale(roundcompleted_img, (WIDTH, HEIGHT))
+        use_image = True
+    except pygame.error as e:
+        print(f"Could not load roundcompleted.png: {e}")
+        use_image = False
+    
+    while True:
+        status = client.get_game_status()
+        if not status:
+            show_popup("Lost connection to server!", color=(255, 0, 0))
+            pygame.quit()
+            sys.exit()
+        
+        if status.get('status') == 'roundcompleted_all':
+            roundcompleted_remaining = status.get('roundcompleted_remaining', 0)
+            answered_players = status.get('answered_players', [])
+            total_players = status.get('total_players', 0)
+            
+            # **RENDER CURRENT GAME CONTENT FIRST**
+            # Fill with main background
+            screen.fill((255, 255, 255))
+            screen.blit(main_bg, (0, 0))
+            
+            # Show current question if available
+            if current_question and current_question.get('text'):
+                display_color_question(current_question.get('text'), current_question.get('text_color'))
+                draw_name_options(current_question.get('options', []))
+            
+            # Show timer and scores
+            if status.get('current_question_number') and status.get('max_questions'):
+                font = pygame.font.SysFont(None, 36)
+                progress_render = font.render(f"Question {status['current_question_number']} of {status['max_questions']}", True, (0, 0, 0))
+                screen.blit(progress_render, (WIDTH // 2 - progress_render.get_width() // 2, 30))
+            
+            # **NOW APPLY OVERLAY EFFECT**
+            # Create semi-transparent overlay
+            overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+            overlay.fill((0, 0, 0, 128))  # Semi-transparent black
+            screen.blit(overlay, (0, 0))
+            
+            if use_image:
+                # Show round completed image on top of overlay
+                screen.blit(roundcompleted_img, (0, 0))
+            else:
+                # Fallback to text display
+                completed_msg = font_message.render("ROUND COMPLETED!", True, (255, 255, 255))
+                screen.blit(completed_msg, (WIDTH // 2 - completed_msg.get_width() // 2, HEIGHT // 2 - 100))
+                
+                all_msg = font_message.render("Everyone Answered!", True, (255, 255, 255))
+                screen.blit(all_msg, (WIDTH // 2 - all_msg.get_width() // 2, HEIGHT // 2 - 40))
+            
+          
+            
+           
+        elif status.get('status') == 'playing':
+            print("Round completed (all) screen finished! Starting next question...")
+            break
+        elif status.get('status') == 'finished':
+            print("Game finished during round completed (all) screen!")
+            break
+        else:
+            break
+            
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                sys.exit()
+        
+        pygame.display.flip()
+        clock.tick(60)
 
-# Load main background image
-main_bg_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../assets/main.png'))
-main_bg = pygame.image.load(main_bg_path).convert_alpha()
-main_bg = pygame.transform.smoothscale(main_bg, (WIDTH, HEIGHT))
+# Main Game Loop
+print("🎮 Starting main game loop...")
 
-# Game loop
 while True:
     # Get game status to check if game is still running
     status = client.get_game_status()
@@ -441,63 +635,22 @@ while True:
         show_popup(f"Game Over!\n\nFinal Scores:\n{scores_text}", color=(0, 0, 200))
         break
     
-    # Handle time's up state - show different screens based on whether player answered
-    if status.get('status') == 'timesup' and not answered:
+    # Handle different time's up states based on whether player answered
+    if status.get('status') == 'timesup':
         show_timesup_screen(client)
-        continue  # Go back to main loop to get next status
-    elif status.get('status') == 'timesup' and answered:
-        # Player has answered, show round completed immediately while timesup is active
-        font_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../assets/LuckiestGuy-Regular.ttf'))
-        
-        while True:
-            status = client.get_game_status()
-            if not status:
-                show_popup("Lost connection to server!", color=(255, 0, 0))
-                pygame.quit()
-                sys.exit()
-            
-            if status.get('status') == 'timesup':
-                # Show round completed image while time's up is active
-                try:
-                    roundcompleted_img_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../assets/roundcompleted.png'))
-                    roundcompleted_img = pygame.image.load(roundcompleted_img_path).convert_alpha()
-                    roundcompleted_img = pygame.transform.smoothscale(roundcompleted_img, (WIDTH, HEIGHT))
-                    screen.blit(roundcompleted_img, (0, 0))
-                except pygame.error as e:
-                    # Fallback to text display
-                    screen.fill((0, 200, 0))  # Green background
-                    font_message = pygame.font.Font(font_path, 60)
-                    completed_msg = font_message.render("ROUND COMPLETED!", True, (255, 255, 255))
-                    screen.blit(completed_msg, (WIDTH // 2 - completed_msg.get_width() // 2, HEIGHT // 2 - 50))
-                
-                # Show countdown timer (same as time's up screen)
-                timesup_remaining = status.get('timesup_remaining', 0)
-                font_small = pygame.font.Font(font_path, 30)
-                remaining_text = font_small.render(f"Next question in: {int(timesup_remaining) + 1}", True, (255, 255, 255))
-                screen.blit(remaining_text, (WIDTH // 2 - remaining_text.get_width() // 2, HEIGHT - 100))
-                
-            elif status.get('status') == 'playing':
-                print("Round completed screen finished! Starting next question...")
-                break
-            elif status.get('status') == 'finished':
-                print("Game finished during round completed screen!")
-                break
-            else:
-                # Should not happen, but handle gracefully
-                break
-                
-            # Handle quit events while showing round completed
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    pygame.quit()
-                    sys.exit()
-            
-            pygame.display.flip()
-            clock.tick(60)  # Higher FPS for smooth display
         continue
     
-    # Get synchronized question
-    get_synchronized_question()
+    if status.get('status') == 'roundcompleted_waiting':
+        show_roundcompleted_waiting_screen(client)
+        continue
+    # **NEW: Handle all players answered case**
+    if status.get('status') == 'roundcompleted_all':
+        show_roundcompleted_all_screen(client)
+        continue
+    
+    # Get synchronized question ONLY when status is 'playing'
+    if status.get('status') == 'playing':
+        get_synchronized_question()
     
     screen.fill((255, 255, 255))
     
@@ -573,21 +726,10 @@ while True:
     # Display current screen first
     pygame.display.flip()
     
-    # Remove the old time up handling code since it's now handled above
-    # Check if all players answered and show message
-    if status.get('all_answered') and not answered and current_question:
-        show_popup_with_image("", "roundcompleted.png", display_time=1500)  # Show for 1.5 seconds
-    
-    # Add pause between rounds when moving to next question
-    if last_question_id != current_question.get('question_id') and last_question_id is not None:
-        # Show transition message between rounds
-        pygame.time.wait(800)  # Longer pause between rounds
-    
-    last_time_remaining = time_remaining
-
     clock.tick(FPS)
 
 # Game ended
+print("🏁 Game ended!")
 pygame.quit()
 sys.exit()
 
