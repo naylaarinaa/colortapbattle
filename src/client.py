@@ -117,6 +117,102 @@ def draw_popup_overlay(popup_type):
     elif popup_type == "noresponse":
         show_popup("No Response", color=(100, 100, 100))
 
+def draw_final_scores_centered(scores, highlight_name=None):
+    """
+    Menampilkan skor akhir di tengah layar, dengan highlight untuk pemain sendiri.
+    Diurutkan dari skor tertinggi ke terendah.
+    """
+    if not scores:
+        return
+
+    font_score = load_font('BalsamiqSans-Regular.ttf', 26)
+    row_height = 50
+    sorted_scores = sorted(scores.items(), key=lambda x: -x[1])  # ⬅️ urut menurun
+    total_height = len(sorted_scores) * row_height
+    start_y = (HEIGHT - total_height) // 2 + 30
+
+    for i, (player, score) in enumerate(sorted_scores, 1):
+        text = f"{i}. {player}: {score}"
+        label = font_score.render(text, True, (70, 39, 24))
+        label_rect = label.get_rect()
+
+        # Buat background rectangle di tengah
+        bg_width = label_rect.width + 50
+        bg_height = row_height
+        bg_x = (WIDTH - bg_width) // 2
+        bg_y = start_y + (i - 1) * row_height
+        bg_rect = pygame.Rect(bg_x, bg_y, bg_width, bg_height)
+
+        if player == highlight_name:
+            pygame.draw.rect(screen, (250, 250, 241), bg_rect, border_radius=12)
+            pygame.draw.rect(screen, (163, 102, 71), bg_rect, 3, border_radius=12)
+
+        label_rect.center = bg_rect.center
+        screen.blit(label, label_rect)
+
+def show_you_win_or_lose(client, final_scores):
+    sorted_scores = sorted(final_scores.items(), key=lambda x: -x[1])
+    winner_name, winner_score = sorted_scores[0]
+
+    if client.player_username == winner_name:
+        # Tampilkan halaman YOU WIN
+        try:
+            win_img = pygame.image.load(os.path.abspath(os.path.join(os.path.dirname(__file__), '../assets/winner.png'))).convert_alpha()
+            screen.blit(pygame.transform.smoothscale(win_img, (WIDTH, HEIGHT)), (0, 0))
+        except pygame.error:
+            screen.fill((255, 255, 255))
+            font = load_font('LuckiestGuy-Regular.ttf', 80)
+            label = font.render("YOU WIN!", True, (0, 200, 0))
+            screen.blit(label, label.get_rect(center=(WIDTH // 2, HEIGHT // 2)))
+        pygame.display.flip()
+        pygame.time.wait(4000)  # Delay sebelum lanjut ke final score
+
+    
+    pygame.display.flip()
+
+def show_final_score_page_with_buttons(final_scores, client):
+    try:
+        final_img = pygame.image.load(os.path.abspath(os.path.join(os.path.dirname(__file__), '../assets/final_score.png'))).convert_alpha()
+        screen.blit(pygame.transform.smoothscale(final_img, (WIDTH, HEIGHT)), (0, 0))
+    except pygame.error:
+        screen.fill((255, 255, 255))
+
+    draw_final_scores_centered(final_scores, client.player_username)
+
+    font_btn = load_font('LuckiestGuy-Regular.ttf', 36)
+    restart_btn = pygame.Rect(WIDTH // 2 - 140, HEIGHT - 100, 120, 50)
+    exit_btn = pygame.Rect(WIDTH // 2 + 20, HEIGHT - 100, 120, 50)
+
+    pygame.draw.rect(screen, (240, 169, 45), restart_btn, border_radius=10)
+    pygame.draw.rect(screen, (240, 50, 45), exit_btn, border_radius=10)
+
+    pygame.draw.rect(screen, (70, 39, 24), restart_btn, 2, border_radius=10)
+    pygame.draw.rect(screen, (70, 39, 24), exit_btn, 2, border_radius=10)
+
+    restart_label = font_btn.render("RESTART", True, (70, 39, 24))
+    exit_label = font_btn.render("EXIT", True, (255, 255, 255))
+
+    screen.blit(restart_label, restart_label.get_rect(center=restart_btn.center))
+    screen.blit(exit_label, exit_label.get_rect(center=exit_btn.center))
+
+    pygame.display.flip()
+
+    while True:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                if restart_btn.collidepoint(event.pos):
+                    logger.info("🔁 Restart clicked")
+                    client.restart_game()
+                    os.execl(sys.executable, sys.executable, *sys.argv)
+
+                elif exit_btn.collidepoint(event.pos):
+                    logger.info("🚪 Exit clicked")
+                    pygame.quit(); sys.exit()
+        clock.tick(30)
+
+
 def render_game_ui(status, score, current_question):
     screen.fill((255, 255, 255))
     screen.blit(main_bg, (0, 0))
@@ -241,6 +337,14 @@ class ClientInterface:
                 logger.info(f"❌ Wrong answer")
         
         return result
+
+    def restart_game(self):
+        req = "POST /reset HTTP/1.0\r\n\r\n"
+        result = self.send_http_request(req)
+        if result and result.get("success"):
+            logger.info("🔄 Game restart requested successfully")
+        else:
+            logger.error("🚫 Failed to restart game")
 
 def show_instructions_modal():
     try:
@@ -518,24 +622,39 @@ while True:
         logger.error("🚫 Lost connection!")
         show_popup("Lost connection to server!", color=(255, 0, 0))
         break
-        
+            
     if status.get('status') == 'finished':
         final_scores = status.get('final_scores', {})
+
+        # Logging ke terminal
         for i, (player, player_score) in enumerate(sorted(final_scores.items(), key=lambda x: -x[1]), 1):
             logger.info(f"🏆 {i}. {player}: {player_score} points")
-        scores_text = "\n".join([f"{player}: {score}" for player, score in final_scores.items()])
-        show_popup(f"Game Over!\n\nFinal Scores:\n{scores_text}", color=(0, 0, 200))
+
+        # Tampilkan YOU WIN (jika pemain menang)
+        show_you_win_or_lose(client, final_scores)
+
+        # Tampilkan halaman skor akhir + tombol
+        show_final_score_page_with_buttons(final_scores, client)
         break
+
+
+
+
         
     if status.get('status') == 'timesup':
         show_special_screen(client, 'timesup', 'timesup', "TIME'S UP!")
         continue
+
     if status.get('status') == 'roundcompleted_waiting':
-        show_special_screen(client, 'roundcompleted_waiting', 'roundcompleted', "ROUND COMPLETED!")
+        if status.get('current_question_number', 0) < status.get('max_questions', 10):
+            show_special_screen(client, 'roundcompleted_waiting', 'roundcompleted', "ROUND COMPLETED!")
         continue
+
     if status.get('status') == 'roundcompleted_all':
-        show_special_screen(client, 'roundcompleted_all', 'roundcompleted', "ROUND COMPLETED!")
+        if status.get('current_question_number', 0) < status.get('max_questions', 10):
+            show_special_screen(client, 'roundcompleted_all', 'roundcompleted', "ROUND COMPLETED!")
         continue
+
     
     if status.get('status') == 'playing':
         get_synchronized_question()

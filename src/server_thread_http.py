@@ -11,6 +11,44 @@ except Exception:
 
 httpserver = HttpServer(required_players=required_players)
 
+# Tambahkan endpoint reset di HttpServer
+if not hasattr(HttpServer, "reset_game"):
+    def reset_game(self):
+        self.players = {}
+        self.status = 'waiting'
+        self.final_scores = {}
+        self.answers = {}
+        self.current_question_index = 0
+        self.current_question = None
+        self.countdown_started = False
+        self.game_started = False
+        self.round_started = False
+        self.time_started = None
+        self.question_sent_time = None
+        logging.info("🔁 Game state has been reset by client request.")
+    setattr(HttpServer, "reset_game", reset_game)
+
+    old_proses = httpserver.proses
+    def new_proses(self, data):
+        try:
+            headers = data.splitlines()
+            if not headers:
+                return self.build_response(400, 'Bad Request')
+            method, path, *_ = headers[0].split()
+            if method == 'POST' and path == '/reset':
+                self.reset_game()
+                response_body = b'{"success": true}'
+                headers = {
+                    'Content-Type': 'application/json',
+                    'Content-Length': str(len(response_body))
+                }
+                return self.build_response(200, 'OK', headers, response_body)
+            return old_proses(data)
+        except Exception as e:
+            logging.error(f"Error in modified proses: {e}")
+            return self.build_response(500, 'Internal Server Error')
+    httpserver.proses = new_proses.__get__(httpserver, HttpServer)
+
 class ProcessTheClient(threading.Thread):
     def __init__(self, connection, address):
         super().__init__(daemon=True)

@@ -47,8 +47,8 @@ pip install -r requirements.txt
 Pastikan semua file asset berada di folder `assets/`:
 
 - Font files: `BalsamiqSans-Regular.ttf`, `LuckiestGuy-Regular.ttf`
-- Background images: `main.png`, `username.png`, `instructions.png`, `waiting_lobby.png`
-- Popup images: `correct.png`, `wrong.png`, `timesup.png`, `roundcompleted.png`
+- Background images: `main.png`, `username.png`, `instructions.png`, `waiting_lobby.png`,`finalscore.png`
+- Popup images: `correct.png`, `wrong.png`, `timesup.png`, `roundcompleted.png`, `winner.png`
 
 ## Cara Menjalankan Game
 
