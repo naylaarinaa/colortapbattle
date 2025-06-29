@@ -7,7 +7,7 @@
 ## Struktur Proyek
 
 ```
-colortapbattle/
+stroopcolorgame/
 ├── assets/
 │   ├── BalsamiqSans-Regular.ttf     # Font untuk UI dan text
 │   ├── LuckiestGuy-Regular.ttf      # Font utama untuk judul
