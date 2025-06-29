@@ -271,14 +271,22 @@ class ClientInterface:
     _round_robin_index = 0
     _round_robin_lock = threading.Lock()
     
-    def __init__(self, player_username, server_ports=None):
+    def __init__(self, player_username, server_ports=None, use_load_balancer=True):
         self.player_username = player_username
         self.server_host = '127.0.0.1'
+        self.use_load_balancer = use_load_balancer
         
-        if server_ports is None:
-            self.server_ports = [8889, 8890, 8891]
+        if use_load_balancer:
+            # Connect through load balancer
+            self.server_ports = [8888]  # Load balancer port
+            logger.info("🔄 Using Load Balancer mode")
         else:
-            self.server_ports = server_ports
+            # Direct connection
+            if server_ports is None:
+                self.server_ports = [8889, 8890, 8891]
+            else:
+                self.server_ports = server_ports
+            logger.info("🔗 Using Direct connection mode")
             
         self.current_port_index = 0
         self.server_port = None
@@ -289,8 +297,8 @@ class ClientInterface:
         self._last_status_time = 0
         self._status_cache_timeout = 0.1
         
-        # Connect using round robin algorithm
-        if not self._connect_with_round_robin():
+        # Connect to server(s)
+        if not self._connect_to_available_server():
             raise ConnectionError("No servers available!")
         
         logger.info(f"🔗 Connected to server: {self.server_host}:{self.server_port}")
@@ -310,6 +318,42 @@ class ClientInterface:
             
             return current_port
 
+    def _connect_to_available_server(self):
+        """Connect to available server (through load balancer or directly)"""
+        if self.use_load_balancer:
+            # Simple connection to load balancer
+            if self._test_server_connection(8888):
+                self.server_port = 8888
+                self.current_port_index = 0
+                logger.info("✅ Connected through Load Balancer (port 8888)")
+                return True
+            else:
+                logger.error("❌ Load Balancer (port 8888) not available")
+                return False
+        else:
+            # Original direct connection logic
+            return self._connect_direct()
+
+    def _connect_direct(self):
+        """Direct connection to servers"""
+        import random
+        
+        # Shuffle ports for better distribution
+        available_ports = self.server_ports.copy()
+        random.shuffle(available_ports)
+        
+        for port in available_ports:
+            if self._test_server_connection(port):
+                self.server_port = port
+                self.current_port_index = self.server_ports.index(port)
+                logger.info(f"✅ Direct connection to: {port}")
+                return True
+            else:
+                logger.warning(f"❌ Server {port}: unavailable")
+        
+        logger.error("🚫 No servers available!")
+        return False
+
     def _test_server_connection(self, port, timeout=2.0):
         """Test if server is available"""
         import socket
@@ -320,60 +364,6 @@ class ClientInterface:
                 return True
         except (socket.error, socket.timeout, ConnectionRefusedError):
             return False
-
-    def _connect_with_round_robin(self):
-        """Connect to server using round robin algorithm"""
-        logger.info(f"🔄 Using Round Robin load balancing on ports: {self.server_ports}")
-        
-        # First, find all available servers
-        available_ports = []
-        for port in self.server_ports:
-            if self._test_server_connection(port):
-                available_ports.append(port)
-                logger.info(f"✅ Server {port}: available")
-            else:
-                logger.warning(f"❌ Server {port}: unavailable")
-        
-        if not available_ports:
-            logger.error("🚫 No servers available!")
-            return False
-        
-        # Get next port using round robin
-        chosen_port = self._get_next_round_robin_port(available_ports)
-        
-        if chosen_port:
-            self.server_port = chosen_port
-            self.current_port_index = self.server_ports.index(chosen_port)
-            logger.info(f"🎯 Round Robin selected: {chosen_port} (available: {available_ports})")
-            return True
-        
-        return False
-
-    def _try_next_server_round_robin(self):
-        """Try to connect to next available server using round robin"""
-        logger.warning("🔄 Current server failed, finding alternative...")
-        
-        # Find all available servers except current failed one
-        available_ports = []
-        for port in self.server_ports:
-            if port != self.server_port and self._test_server_connection(port):
-                available_ports.append(port)
-        
-        if not available_ports:
-            logger.error("🚫 No alternative servers available!")
-            return False
-        
-        # Get next port using round robin
-        chosen_port = self._get_next_round_robin_port(available_ports)
-        
-        if chosen_port:
-            old_port = self.server_port
-            self.server_port = chosen_port
-            self.current_port_index = self.server_ports.index(chosen_port)
-            logger.info(f"🔄 Round Robin failover: {old_port} → {chosen_port}")
-            return True
-        
-        return False
 
     def send_http_request(self, request_text, retry=True):
         """Enhanced HTTP request with round robin failover"""
@@ -693,9 +683,9 @@ def get_username_screen():
 
         if not username and not active:
             hint_font = load_font('LuckiestGuy-Regular.ttf', 28)
-            hint = hint_font.render("max 16 karakter", True, (255, 255, 255))
+            hint = hint_font.render("max 5 characters", True, (255, 255, 255))
             for ox, oy in outline_offsets:
-                hint_outline = hint_font.render("max 16 karakter", True, color_outline)
+                hint_outline = hint_font.render("max 5 characters", True, color_outline)
                 screen.blit(hint_outline, (input_box_anim.x+12+ox, input_box_anim.y+18+oy))
             screen.blit(hint, (input_box_anim.x+12, input_box_anim.y+18))
 
@@ -755,6 +745,10 @@ def parse_client_arguments():
                        help='Comma-separated list of server ports (default: 8889,8890,8891)')
     parser.add_argument('--server-host', default='127.0.0.1', 
                        help='Server host (default: 127.0.0.1)')
+    parser.add_argument('--use-load-balancer', action='store_true', default=True,
+                       help='Use load balancer (default: True)')
+    parser.add_argument('--direct-connection', action='store_true', 
+                       help='Use direct connection instead of load balancer')
     return parser.parse_args()
 
 # Main execution
@@ -763,12 +757,21 @@ if __name__ == "__main__":
 
     # Parse command line arguments
     args = parse_client_arguments()
-        
-    # Parse server ports
-    server_ports = [int(port.strip()) for port in args.server_ports.split(',')]
+    
+    # Determine connection mode
+    use_load_balancer = not args.direct_connection
+    
+    # Parse server ports for direct connection
+    if not use_load_balancer:
+        server_ports = [int(port.strip()) for port in args.server_ports.split(',')]
+    else:
+        server_ports = None
 
     logger.info(f"🎮 Starting Color Tap Battle Client")
-    logger.info(f"🔗 Trying servers: {args.server_host}:{server_ports}")
+    if use_load_balancer:
+        logger.info(f"🔄 Using Load Balancer on port 8888")
+    else:
+        logger.info(f"🔗 Direct connection to: {args.server_host}:{server_ports}")
         
     try:
         # Get username
@@ -780,8 +783,8 @@ if __name__ == "__main__":
 
         logger.info(f"👤 Player: {username}")
 
-        # Create client with load balancer
-        client = ClientInterface(username, server_ports)
+        # Create client with appropriate connection mode
+        client = ClientInterface(username, server_ports, use_load_balancer)
             
         # Join game ONCE
         join_result = client.join_game()

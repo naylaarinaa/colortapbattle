@@ -87,7 +87,7 @@ python client.py
 
 **Flow client:**
 
-1. Input username (max 16 karakter)
+1. Input username (max 5 karakter)
 2. Baca instruksi permainan
 3. Masuk lobby menunggu pemain lain
 4. Countdown otomatis ketika pemain cukup
