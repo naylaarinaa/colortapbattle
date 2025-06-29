@@ -1,58 +1,36 @@
 from socket import *
-import socket, threading, sys, logging, signal
+import socket, threading, sys, logging, signal, argparse
 from http import HttpServer
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-try:
-    required_players = min(max(int(sys.argv[1]), 2), 10) if len(sys.argv) > 1 else 2
-except Exception:
-    required_players = 2
+def parse_arguments():
+    parser = argparse.ArgumentParser(description='Color Tap Battle Server')
+    parser.add_argument('--port', type=int, default=8889, help='Server port (default: 8889)')
+    parser.add_argument('--redis-host', default='127.0.0.1', help='Redis host (default: 127.0.0.1)')
+    parser.add_argument('--redis-port', type=int, default=6379, help='Redis port (default: 6379)')
+    parser.add_argument('--required-players', type=int, help='Required players to start game (only for initial setup)')
+    parser.add_argument('--server-id', default='server1', help='Server instance ID for logging')
+    return parser.parse_args()
 
-httpserver = HttpServer(required_players=required_players)
+httpserver = None
 
 # Tambahkan endpoint reset di HttpServer
 if not hasattr(HttpServer, "reset_game"):
     def reset_game(self):
-        self.players = {}
-        self.status = 'waiting'
-        self.final_scores = {}
-        self.answers = {}
-        self.current_question_index = 0
-        self.current_question = None
-        self.countdown_started = False
-        self.game_started = False
-        self.round_started = False
-        self.time_started = None
-        self.question_sent_time = None
+        if hasattr(self.game_state, 'reset_game_internal'):  # Redis mode
+            self.game_state.reset_game_internal()
+        else:  # Fallback mode
+            self.reset_game_internal_fallback()
         logging.info("🔁 Game state has been reset by client request.")
     setattr(HttpServer, "reset_game", reset_game)
-
-    old_proses = httpserver.proses
-    def new_proses(self, data):
-        try:
-            headers = data.splitlines()
-            if not headers:
-                return self.build_response(400, 'Bad Request')
-            method, path, *_ = headers[0].split()
-            if method == 'POST' and path == '/reset':
-                self.reset_game()
-                response_body = b'{"success": true}'
-                headers = {
-                    'Content-Type': 'application/json',
-                    'Content-Length': str(len(response_body))
-                }
-                return self.build_response(200, 'OK', headers, response_body)
-            return old_proses(data)
-        except Exception as e:
-            logging.error(f"Error in modified proses: {e}")
-            return self.build_response(500, 'Internal Server Error')
-    httpserver.proses = new_proses.__get__(httpserver, HttpServer)
 
 class ProcessTheClient(threading.Thread):
     def __init__(self, connection, address):
         super().__init__(daemon=True)
         self.connection, self.address = connection, address
+        # Track this connection
+        ProcessTheClient.active_connections = getattr(ProcessTheClient, 'active_connections', 0) + 1
 
     def run(self):
         self.connection.settimeout(1.0)
@@ -77,22 +55,62 @@ class ProcessTheClient(threading.Thread):
             logging.error(f"Error processing {self.address}: {e}")
         finally:
             self.connection.close()
-            logging.info(f"Connection with {self.address} closed")
+            # Decrease connection count
+            ProcessTheClient.active_connections = getattr(ProcessTheClient, 'active_connections', 1) - 1
+            logging.info(f"Connection with {self.address} closed (active: {ProcessTheClient.active_connections})")
 
 class Server(threading.Thread):
-    def __init__(self):
+    def __init__(self, port, args):
         super().__init__(daemon=False)
         self.the_clients, self.my_socket = [], socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.my_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.running = True
+        self.port = port
+        self.args = args
 
     def run(self):
+        global httpserver
         try:
-            self.my_socket.bind(('0.0.0.0', 8889))
+            print("🔗 Testing Redis connection...")
+            
+            # Test Redis connection before creating HttpServer
+            import redis
+            test_redis = redis.Redis(host=self.args.redis_host, port=self.args.redis_port, decode_responses=True)
+            test_redis.ping()
+            
+            # Test basic operations
+            test_redis.set("test_key", "test_value")
+            result = test_redis.get("test_key")
+            test_redis.delete("test_key")
+            
+            print(f"✅ Redis connection test successful: {result}")
+            
+            # Initialize HTTP server with arguments
+            httpserver = HttpServer(
+                redis_host=self.args.redis_host,
+                redis_port=self.args.redis_port,
+                required_players=self.args.required_players
+            )
+            
+            self.my_socket.bind(('0.0.0.0', self.port))
             self.my_socket.listen(5)
             self.my_socket.settimeout(1.0)
-            logging.info("Color Tap Battle Server started on 0.0.0.0:8889")
-            logging.info(f"Required players to start: {required_players}")
+            
+            required_players = httpserver.REQUIRED_PLAYERS
+            
+            logging.info(f"🚀 {self.args.server_id} started on 0.0.0.0:{self.port}")
+            logging.info(f"🔗 Redis: {self.args.redis_host}:{self.args.redis_port}")
+            logging.info(f"🎯 Required players: {required_players} (from Redis)")
+            
+            # Test game state access
+            try:
+                test_status = httpserver.get_game_status('test')
+                print(f"🧪 Game state test: {test_status.get('status', 'unknown')}")
+                if test_status.get('status') == 'error':
+                    print(f"⚠️ Game state test error: {test_status.get('message', 'Unknown error')}")
+            except Exception as e:
+                print(f"⚠️ Game state test failed: {e}")
+            
             while self.running:
                 try:
                     self.connection, self.client_address = self.my_socket.accept()
@@ -106,51 +124,76 @@ class Server(threading.Thread):
                 except OSError as e:
                     if self.running: logging.error(f"Socket error: {e}")
                     break
+        except redis.ConnectionError as e:
+            logging.error(f"❌ Redis connection failed: {e}")
+            logging.error("💡 Make sure Redis server is running: redis-server")
         except Exception as e:
-            logging.error(f"Server error: {e}")
+            logging.error(f"❌ Server error: {e}")
+            import traceback
+            traceback.print_exc()
         finally:
             self.cleanup()
 
     def stop(self):
         logging.info("Stopping server...")
         self.running = False
-        for t in self.the_clients: t.join(timeout=1.0)
+        for t in self.the_clients: 
+            try:
+                t.join(timeout=1.0)
+            except:
+                pass
         self.cleanup()
 
     def cleanup(self):
         try:
-            self.my_socket.close()
+            if hasattr(self, 'my_socket'):
+                self.my_socket.close()
             logging.info("Server socket closed")
         except Exception:
             pass
 
-server = None
-
 def signal_handler(sig, frame):
-    print("\n🛑 Received interrupt signal (Ctrl+C)\nShutting down server gracefully...")
+    print("\n🛑 Received interrupt signal (Ctrl+C)")
+    print("Shutting down server gracefully...")
     global server
     if server:
         server.stop()
         server.join(timeout=3.0)
+    
+    # Cleanup Redis connection
+    global httpserver
+    if httpserver and hasattr(httpserver.game_state, 'cleanup'):
+        httpserver.game_state.cleanup()
+    
     print("✅ Server stopped. Goodbye!")
     sys.exit(0)
 
 def main():
+    args = parse_arguments()
     global server
+    
     signal.signal(signal.SIGINT, signal_handler)
-    print("Starting Color Tap Battle Server...")
-    print(f"Required players to start: {required_players}")
-    print("Press Ctrl+C to stop the server")
+    
+    print("🎮 Starting Color Tap Battle Server...")
+    print(f"🚀 Server ID: {args.server_id}")
+    print(f"🔗 Redis: {args.redis_host}:{args.redis_port}")
+    if args.required_players:
+        print(f"🎯 Setting required players: {args.required_players}")
+    else:
+        print("🎯 Using existing Redis config for required players")
+    print("🛑 Press Ctrl+C to stop the server")
+    
     try:
-        server = Server()
+        server = Server(args.port, args)
         server.start()
         while server.is_alive():
             server.join(timeout=1.0)
     except KeyboardInterrupt:
-        if server: server.stop()
+        signal_handler(signal.SIGINT, None)
     except Exception as e:
         logging.error(f"Main thread error: {e}")
-        if server: server.stop()
+        if server: 
+            server.stop()
     finally:
         print("Main thread exiting...")
 

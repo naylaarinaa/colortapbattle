@@ -1,4 +1,7 @@
 import pygame, sys, os, socket, json, logging
+import time  # Import time module for optimized polling
+import random
+import threading
 
 # Setup minimal logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S')
@@ -219,10 +222,16 @@ def render_game_ui(status, score, current_question):
     screen.fill((255, 255, 255))
     screen.blit(main_bg, (0, 0))
     
-    # Progress
+    # Progress - Fix: Define progress_render properly
+    progress_render = None  # Initialize variable
     if status.get('current_question_number') and status.get('max_questions'):
         font_progress = load_font('BalsamiqSans-Regular.ttf', 25)
         progress_render = font_progress.render(f"{status['current_question_number']}/{status['max_questions']}", True, (0, 0, 0))
+        screen.blit(progress_render, (WIDTH // 2 - progress_render.get_width() // 2 - 95, 68))
+    else:
+        # Show default progress if no question data
+        font_progress = load_font('BalsamiqSans-Regular.ttf', 25)
+        progress_render = font_progress.render("0/0", True, (0, 0, 0))
         screen.blit(progress_render, (WIDTH // 2 - progress_render.get_width() // 2 - 95, 68))
     
     # Question & options
@@ -240,105 +249,228 @@ def render_game_ui(status, score, current_question):
     timer_render = font_timer.render(f"{remaining}s", True, timer_color)
     screen.blit(timer_render, (WIDTH - timer_render.get_width() - 100, 68))
     
-    # Score
+    # Score - Fix: Make sure progress_render exists before using it
     font_score = load_font('BalsamiqSans-Regular.ttf', 30)
     score_render = font_score.render(f"{score}", True, (0, 0, 0))
-    score_x = WIDTH // 2 + progress_render.get_width() // 2 - score_render.get_width() + 50
+    if progress_render:  # Check if progress_render exists
+        score_x = WIDTH // 2 + progress_render.get_width() // 2 - score_render.get_width() + 50
+    else:
+        score_x = WIDTH // 2 + 50  # Default position
     screen.blit(score_render, (score_x, 68))
     
-    # Other scores
-    draw_scores(status.get('scores', {}), client.player_username)
+    # Other scores - Fix: Add proper client reference
+    if 'client' in globals():  # Check if client exists in global scope
+        draw_scores(status.get('scores', {}), client.player_username)
+    else:
+        draw_scores(status.get('scores', {}))  # Without highlight
     
     return options
 
 class ClientInterface:
-    def __init__(self, player_username):
+    # Class variable untuk tracking round robin state
+    _round_robin_index = 0
+    _round_robin_lock = threading.Lock()
+    
+    def __init__(self, player_username, server_ports=None):
         self.player_username = player_username
         self.server_host = '127.0.0.1'
-        self.server_port = 8889
-        logger.info(f"🔗 Connected to server: {self.server_host}:{self.server_port}")
+        
+        if server_ports is None:
+            self.server_ports = [8889, 8890, 8891]
+        else:
+            self.server_ports = server_ports
+            
+        self.current_port_index = 0
+        self.server_port = None
         self._last_status = None
-        self._last_question_id = None  # Tambahkan tracking untuk question ID
+        
+        # Add polling optimization
+        self._status_cache = None
+        self._last_status_time = 0
+        self._status_cache_timeout = 0.1
+        
+        # Connect using round robin algorithm
+        if not self._connect_with_round_robin():
+            raise ConnectionError("No servers available!")
+        
+        logger.info(f"🔗 Connected to server: {self.server_host}:{self.server_port}")
 
-    def send_http_request(self, request_text):
+    @classmethod
+    def _get_next_round_robin_port(cls, available_ports):
+        """Get next port using round robin algorithm (thread-safe)"""
+        with cls._round_robin_lock:
+            if not available_ports:
+                return None
+            
+            # Find current index in available ports
+            current_port = available_ports[cls._round_robin_index % len(available_ports)]
+            
+            # Move to next index
+            cls._round_robin_index = (cls._round_robin_index + 1) % len(available_ports)
+            
+            return current_port
+
+    def _test_server_connection(self, port, timeout=2.0):
+        """Test if server is available"""
+        import socket
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(10.0)
-                s.connect((self.server_host, self.server_port))
-                s.sendall(request_text.encode())
-                response = b""
-                while True:
-                    part = s.recv(4096)
-                    if not part: break
-                    response += part
-                    if b'\r\n\r\n' in response: break
-                body = response.split(b'\r\n\r\n', 1)[-1] if b'\r\n\r\n' in response else response
-                return json.loads(body.decode())
-        except Exception as e:
-            logger.error(f"🚫 Server error: {e}")
-            return None
+                s.settimeout(timeout)
+                s.connect((self.server_host, port))
+                return True
+        except (socket.error, socket.timeout, ConnectionRefusedError):
+            return False
+
+    def _connect_with_round_robin(self):
+        """Connect to server using round robin algorithm"""
+        logger.info(f"🔄 Using Round Robin load balancing on ports: {self.server_ports}")
+        
+        # First, find all available servers
+        available_ports = []
+        for port in self.server_ports:
+            if self._test_server_connection(port):
+                available_ports.append(port)
+                logger.info(f"✅ Server {port}: available")
+            else:
+                logger.warning(f"❌ Server {port}: unavailable")
+        
+        if not available_ports:
+            logger.error("🚫 No servers available!")
+            return False
+        
+        # Get next port using round robin
+        chosen_port = self._get_next_round_robin_port(available_ports)
+        
+        if chosen_port:
+            self.server_port = chosen_port
+            self.current_port_index = self.server_ports.index(chosen_port)
+            logger.info(f"🎯 Round Robin selected: {chosen_port} (available: {available_ports})")
+            return True
+        
+        return False
+
+    def _try_next_server_round_robin(self):
+        """Try to connect to next available server using round robin"""
+        logger.warning("🔄 Current server failed, finding alternative...")
+        
+        # Find all available servers except current failed one
+        available_ports = []
+        for port in self.server_ports:
+            if port != self.server_port and self._test_server_connection(port):
+                available_ports.append(port)
+        
+        if not available_ports:
+            logger.error("🚫 No alternative servers available!")
+            return False
+        
+        # Get next port using round robin
+        chosen_port = self._get_next_round_robin_port(available_ports)
+        
+        if chosen_port:
+            old_port = self.server_port
+            self.server_port = chosen_port
+            self.current_port_index = self.server_ports.index(chosen_port)
+            logger.info(f"🔄 Round Robin failover: {old_port} → {chosen_port}")
+            return True
+        
+        return False
+
+    def send_http_request(self, request_text, retry=True):
+        """Enhanced HTTP request with round robin failover"""
+        import socket
+        
+        max_retries = 2
+        for attempt in range(max_retries):
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.settimeout(5.0)
+                    s.connect((self.server_host, self.server_port))
+                    s.sendall(request_text.encode())
+                    
+                    response = b""
+                    start_time = time.time()
+                    while time.time() - start_time < 5.0:
+                        try:
+                            part = s.recv(4096)
+                            if not part:
+                                break
+                            response += part
+                            if b'\r\n\r\n' in response:
+                                break
+                        except socket.timeout:
+                            break
+                    
+                    if b'\r\n\r\n' in response:
+                        body = response.split(b'\r\n\r\n', 1)[1]
+                    else:
+                        body = response
+                    
+                    return json.loads(body.decode())
+                    
+            except (socket.error, socket.timeout, ConnectionRefusedError) as e:
+                logger.warning(f"🔄 Server {self.server_port} failed (attempt {attempt+1}): {e}")
+                
+                if retry and attempt < max_retries - 1:
+                    if self._try_next_server_round_robin():
+                        continue
+                    else:
+                        break
+                else:
+                    break
+            except json.JSONDecodeError as e:
+                logger.error(f"JSON decode error: {e}")
+                return None
+            except Exception as e:
+                logger.error(f"Request error: {e}")
+                return None
+        
+        return None
 
     def join_game(self):
-        logger.info(f"🎲 Joining as '{self.player_username}'...")
-        payload = {'player_username': self.player_username}
-        payload_str = json.dumps(payload)
-        req = f"POST /join HTTP/1.0\r\nContent-Type: application/json\r\nContent-Length: {len(payload_str)}\r\n\r\n{payload_str}"
-        result = self.send_http_request(req)
-        if result:
-            logger.info(f"✅ Joined! Players: {result.get('player_count', 0)}/{result.get('required_players', 2)}")
-        return result
+        request = f"""POST /join HTTP/1.1\r\nHost: {self.server_host}:{self.server_port}\r\nContent-Type: application/json\r\nContent-Length: {len(json.dumps({"player_username": self.player_username}))}\r\n\r\n{json.dumps({"player_username": self.player_username})}"""
+        
+        response = self.send_http_request(request)
+        if response:
+            logger.info(f"✅ Joined! Players: {response.get('player_count', 0)}/{response.get('required_players', '?')}")
+            return response
+        else:
+            logger.error("❌ Failed to join game")
+            return None
 
     def get_game_status(self):
-        req = f"GET /status?player_id={self.player_username} HTTP/1.0\r\n\r\n"
-        result = self.send_http_request(req)
+        """Optimized status with caching"""
+        now = time.time()
         
-        # Log status changes - TAMBAHKAN TIMESUP
-        if result and result.get('status'):
-            status = result.get('status')
-            if status != self._last_status and status in ['countdown', 'playing', 'finished', 'timesup']:
-                if status == 'countdown':
-                    logger.info(f"⏰ Countdown started")
-                elif status == 'playing':
-                    logger.info(f"🎮 Game started")
-                elif status == 'finished':
-                    logger.info(f"🏁 Game finished!")
-                elif status == 'timesup':
-                    logger.info(f"⏱️  Time's up!")
-                self._last_status = status
+        # Use cache for rapid polling
+        if (self._status_cache and 
+            now - self._last_status_time < self._status_cache_timeout):
+            return self._status_cache
         
-        return result
+        request = f"GET /status?player_id={self.player_username} HTTP/1.1\r\nHost: {self.server_host}:{self.server_port}\r\n\r\n"
+        
+        status = self.send_http_request(request)
+        
+        # Cache the result
+        if status:
+            self._status_cache = status
+            self._last_status_time = now
+            
+            # Add status change logging (less verbose)
+            if (status != self._last_status and status and 
+                status.get('status') in ['countdown', 'playing', 'finished', 'timesup', 'roundcompleted_all']):
+                logger.info(f"🔄 Status: {status.get('status')}")
+        
+        self._last_status = status
+        return status
 
     def get_question(self):
-        req = "GET /question HTTP/1.0\r\n\r\n"
-        result = self.send_http_request(req)
-        
-        # TAMBAHKAN LOG SAAT NERIMA SOAL BARU
-        if result and result.get('question_id'):
-            qid = result.get('question_id')
-            if qid != self._last_question_id:
-                text = result.get('text', '')
-                color = result.get('text_color', '')
-                question_num = result.get('question_number', 0)
-                logger.info(f"❓ Q{question_num}: '{text}' in {color}")
-                self._last_question_id = qid
-        
-        return result
+        request = f"GET /question HTTP/1.1\r\nHost: {self.server_host}:{self.server_port}\r\n\r\n"
+        return self.send_http_request(request)
 
     def send_answer(self, question_id, answer):
-        payload = {'player_username': self.player_username, 'question_id': question_id, 'answer': answer}
-        payload_str = json.dumps(payload)
-        req = f"POST /answer HTTP/1.0\r\nContent-Type: application/json\r\nContent-Length: {len(payload_str)}\r\n\r\n{payload_str}"
-        result = self.send_http_request(req)
-        
-        if result:
-            if result.get('correct'):
-                points = result.get('points_earned', 0)
-                new_score = result.get('new_score', 0)
-                logger.info(f"🎉 CORRECT! +{points} pts → {new_score}")
-            elif result:
-                logger.info(f"❌ Wrong answer")
-        
-        return result
+        data = {"player_username": self.player_username, "question_id": question_id, "answer": answer}
+        request = f"""POST /answer HTTP/1.1\r\nHost: {self.server_host}:{self.server_port}\r\nContent-Type: application/json\r\nContent-Length: {len(json.dumps(data))}\r\n\r\n{json.dumps(data)}"""
+        return self.send_http_request(request)
 
     def restart_game(self):
         req = "POST /reset HTTP/1.0\r\n\r\n"
@@ -391,18 +523,14 @@ def show_lobby_screen(client):
     try:
         lobby_img = pygame.transform.smoothscale(pygame.image.load(os.path.abspath(os.path.join(os.path.dirname(__file__), '../assets/waiting_lobby.png'))).convert_alpha(), (WIDTH, HEIGHT))
     except pygame.error:
-        # Fallback: create simple background
         lobby_img = pygame.Surface((WIDTH, HEIGHT))
         lobby_img.fill((50, 50, 100))
         
     font_info = load_font('LuckiestGuy-Regular.ttf', 40)
     font_players = load_font('BalsamiqSans-Regular.ttf', 30)
     
-    join_result = client.join_game()
-    if not join_result:
-        logger.error("🚫 Cannot connect to server!")
-        show_popup("Failed to connect to server!", color=(255, 0, 0))
-        pygame.quit(); sys.exit()
+    # Remove duplicate join - client already joined in main
+    # join_result = client.join_game()  # ❌ Remove this line
     
     while True:
         status = client.get_game_status()
@@ -410,17 +538,30 @@ def show_lobby_screen(client):
             logger.error("🚫 Lost connection!")
             show_popup("Lost connection to server!", color=(255, 0, 0))
             pygame.quit(); sys.exit()
+            
+        # Debug logging
+        logger.info(f"🔍 Lobby status: {status}")
+        
         if status.get('countdown_started') or status.get('game_started'):
             break
         
         screen.blit(lobby_img, (0, 0))
+        
+        # Get correct player counts
         player_count = status.get('player_count', 0)
         required_players = status.get('required_players', 2)
-        players_needed = status.get('players_needed', required_players)
+        players_needed = status.get('players_needed', required_players - player_count)
+        
+        # Debug display
+        logger.info(f"📊 Display: {player_count}/{required_players}, needed: {players_needed}")
+        
         count_msg = font_info.render(f"Players: {player_count}/{required_players}", True, (255, 255, 255))
         screen.blit(count_msg, (100, HEIGHT - 120))
-        msg = (font_players.render(f"Need {players_needed} more player(s)", True, (255, 255, 255))
-               if players_needed > 0 else font_players.render("Starting countdown...", True, (0, 255, 0)))
+        
+        if players_needed > 0:
+            msg = font_players.render(f"Need {players_needed} more player(s)", True, (255, 255, 255))
+        else:
+            msg = font_players.render("Starting countdown...", True, (0, 255, 0))
         screen.blit(msg, (100, HEIGHT - 80))
         
         for event in pygame.event.get():
@@ -606,97 +747,161 @@ def show_special_screen(client, status_name, image_name, message):
         pygame.display.flip()
         clock.tick(60)
 
+# Add argument parsing at the top of main section
+def parse_client_arguments():
+    import argparse
+    parser = argparse.ArgumentParser(description='Color Tap Battle Client')
+    parser.add_argument('--server-ports', default='8889,8890,8891', 
+                       help='Comma-separated list of server ports (default: 8889,8890,8891)')
+    parser.add_argument('--server-host', default='127.0.0.1', 
+                       help='Server host (default: 127.0.0.1)')
+    return parser.parse_args()
+
 # Main execution
-logger.info("🎮 Color Tap Battle Client Starting...")
+if __name__ == "__main__":
+    logger.info("🎮 Color Tap Battle Client Starting...")
 
-player_username = get_username_screen()
-client = ClientInterface(player_username)
-score, answered, current_question = 0, False, {}
-last_question_id, last_time_remaining, time_up_shown = None, None, False
-
-show_instructions_modal()
-show_lobby_screen(client)
-show_countdown_screen(client)
-
-while True:
-    status = client.get_game_status()
-    if not status:
-        logger.error("🚫 Lost connection!")
-        show_popup("Lost connection to server!", color=(255, 0, 0))
-        break
-            
-    if status.get('status') == 'finished':
-        final_scores = status.get('final_scores', {})
-
-        # Logging ke terminal
-        for i, (player, player_score) in enumerate(sorted(final_scores.items(), key=lambda x: -x[1]), 1):
-            logger.info(f"🏆 {i}. {player}: {player_score} points")
-
-        # Tampilkan YOU WIN (jika pemain menang)
-        show_you_win_or_lose(client, final_scores)
-
-        # Tampilkan halaman skor akhir + tombol
-        show_final_score_page_with_buttons(final_scores, client)
-        break
-
-
-
-
+    # Parse command line arguments
+    args = parse_client_arguments()
         
-    if status.get('status') == 'timesup':
-        show_special_screen(client, 'timesup', 'timesup', "TIME'S UP!")
-        continue
+    # Parse server ports
+    server_ports = [int(port.strip()) for port in args.server_ports.split(',')]
 
-    if status.get('status') == 'roundcompleted_waiting':
-        if status.get('current_question_number', 0) < status.get('max_questions', 10):
-            show_special_screen(client, 'roundcompleted_waiting', 'roundcompleted', "ROUND COMPLETED!")
-        continue
+    logger.info(f"🎮 Starting Color Tap Battle Client")
+    logger.info(f"🔗 Trying servers: {args.server_host}:{server_ports}")
+        
+    try:
+        # Get username
+        username = get_username_screen()
+        if not username or username.strip() == "":
+            logger.error("❌ No username provided")
+            pygame.quit()
+            sys.exit()
 
-    if status.get('status') == 'roundcompleted_all':
-        if status.get('current_question_number', 0) < status.get('max_questions', 10):
-            show_special_screen(client, 'roundcompleted_all', 'roundcompleted', "ROUND COMPLETED!")
-        continue
+        logger.info(f"👤 Player: {username}")
 
-    
-    if status.get('status') == 'playing':
-        get_synchronized_question()
-    
-    option_positions = render_game_ui(status, score, current_question)
-    
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            logger.info("👋 User quit")
-            pygame.quit(); sys.exit()
-        if event.type == pygame.MOUSEBUTTONDOWN and not answered and current_question and status.get('question_time_remaining', 0) > 0:
-            chosen_name = get_user_answer(event.pos, option_positions, current_question.get('options', []))
-            if chosen_name:
-                answered = True
-                result = client.send_answer(current_question.get('question_id'), chosen_name)
-                popup_type = "correct" if result and result.get('correct') else ("wrong" if result else "noresponse")
-                if popup_type == "correct":
-                    score = result.get('new_score', score)
+        # Create client with load balancer
+        client = ClientInterface(username, server_ports)
+            
+        # Join game ONCE
+        join_result = client.join_game()
+        if not join_result:
+            show_popup("Failed to join game!", color=(255, 0, 0))
+            pygame.quit()
+            sys.exit()
+
+        # Wait a moment for server to update
+        time.sleep(0.5)
+
+        # Initialize game variables
+        score, answered, current_question = 0, False, {}
+        last_question_id, last_time_remaining = None, None
+        popup_shown = False
+
+        # Show screens
+        show_instructions_modal()
+        show_lobby_screen(client)  # This should now show correct numbers
+        show_countdown_screen(client)
+
+        # Main game loop
+        logger.info("🎮 Starting main game...")
+        
+        while True:
+            status = client.get_game_status()
+            if not status:
+                logger.error("🚫 Lost connection!")
+                show_popup("Lost connection to server!", color=(255, 0, 0))
+                break
                 
-                popup_start = pygame.time.get_ticks()
-                round_completed_triggered = False
-                while True:
-                    status_popup = client.get_game_status()
-                    status_code = status_popup.get('status', '')
-                    render_game_ui(status_popup, score, current_question)
-                    draw_popup_overlay(popup_type)
-                    pygame.display.flip()
-                    clock.tick(30)
-                    
-                    if (status_code.startswith("roundcompleted") or status_code == "timesup") and not round_completed_triggered:
-                        round_completed_triggered = True
-                        pygame.time.wait(1000)
-                        break
-                    if pygame.time.get_ticks() - popup_start >= 10000:
-                        break
-                pygame.event.clear()
-    
-    pygame.display.flip()
-    clock.tick(FPS)
+            current_status = status.get('status', '')
+            
+            # Handle game end
+            if current_status == 'finished':
+                final_scores = status.get('final_scores', {})
+                for i, (player, player_score) in enumerate(sorted(final_scores.items(), key=lambda x: -x[1]), 1):
+                    logger.info(f"🏆 {i}. {player}: {player_score} points")
+                show_you_win_or_lose(client, final_scores)
+                show_final_score_page_with_buttons(final_scores, client)
+                break
+            
+            # Handle special screens (blocking)
+            if current_status == 'timesup':
+                show_special_screen(client, 'timesup', 'timesup', "TIME'S UP!")
+                answered = False
+                popup_shown = False
+                continue
 
-logger.info("👋 Client shutting down...")
-pygame.quit()
-sys.exit()
+            if current_status == 'roundcompleted_waiting':
+                if status.get('current_question_number', 0) < status.get('max_questions', 10):
+                    show_special_screen(client, 'roundcompleted_waiting', 'roundcompleted', "ROUND COMPLETED!")
+                answered = False
+                popup_shown = False
+                continue
+
+            if current_status == 'roundcompleted_all':
+                if status.get('current_question_number', 0) < status.get('max_questions', 10):
+                    show_special_screen(client, 'roundcompleted_all', 'roundcompleted', "ROUND COMPLETED!")
+                answered = False
+                popup_shown = False
+                continue
+
+            # Handle playing state
+            if current_status == 'playing':
+                new_question = client.get_question()
+                qid = new_question.get('question_id') if new_question else None
+                
+                if qid and qid != last_question_id:
+                    current_question = new_question
+                    answered = False
+                    last_question_id = qid
+                    popup_shown = False
+                    logger.info(f"📝 New question {qid}: {new_question.get('text', '')}")
+            
+            # Render game UI
+            option_positions = render_game_ui(status, score, current_question)
+            
+            # Handle mouse clicks
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    logger.info("👋 User quit")
+                    pygame.quit()
+                    sys.exit()
+                    
+                if (event.type == pygame.MOUSEBUTTONDOWN and 
+                    not answered and current_question and 
+                    status.get('question_time_remaining', 0) > 0):
+                    
+                    chosen_name = get_user_answer(event.pos, option_positions, current_question.get('options', []))
+                    if chosen_name:
+                        answered = True
+                        logger.info(f"👆 Answered: {chosen_name}")
+                        
+                        result = client.send_answer(current_question.get('question_id'), chosen_name)
+                        
+                        if not popup_shown:
+                            popup_shown = True
+                            if result and result.get('correct'):
+                                score = result.get('new_score', score)
+                                show_popup_with_image("", "correct.png", display_time=1000)
+                            elif result:
+                                show_popup_with_image("", "wrong.png", display_time=1000)
+                            else:
+                                show_popup("No Response", color=(100, 100, 100))
+                        
+                        pygame.event.clear()
+            
+            pygame.display.flip()
+            clock.tick(30)
+
+        logger.info("👋 Client shutting down...")
+        
+    except ConnectionError as e:
+        logger.error(f"❌ Connection error: {e}")
+        show_popup("No servers available!", color=(255, 0, 0))
+    except Exception as e:
+        logger.error(f"❌ Unexpected error: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        pygame.quit()
+        sys.exit()
