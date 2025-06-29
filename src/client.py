@@ -180,8 +180,10 @@ def show_final_score_page_with_buttons(final_scores, client):
     draw_final_scores_centered(final_scores, client.player_username)
 
     font_btn = load_font('LuckiestGuy-Regular.ttf', 36)
-    restart_btn = pygame.Rect(WIDTH // 2 - 140, HEIGHT - 100, 120, 50)
-    exit_btn = pygame.Rect(WIDTH // 2 + 20, HEIGHT - 100, 120, 50)
+    btn_spacing = 40
+    restart_btn = pygame.Rect(WIDTH // 2 - 180 - btn_spacing//2, HEIGHT - 100, 180, 50)
+    exit_btn = pygame.Rect(WIDTH // 2 + btn_spacing//2, HEIGHT - 100, 120, 50)
+
 
     pygame.draw.rect(screen, (240, 169, 45), restart_btn, border_radius=10)
     pygame.draw.rect(screen, (240, 50, 45), exit_btn, border_radius=10)
