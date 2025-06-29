@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 pygame.init()
 WIDTH, HEIGHT = 800, 600
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
-pygame.display.set_caption("Color Tap Battle")
+pygame.display.set_caption("Stroop Color Game")
 clock = pygame.time.Clock()
 FPS = 60
 
@@ -740,7 +740,7 @@ def show_special_screen(client, status_name, image_name, message):
 # Add argument parsing at the top of main section
 def parse_client_arguments():
     import argparse
-    parser = argparse.ArgumentParser(description='Color Tap Battle Client')
+    parser = argparse.ArgumentParser(description='Stroop Color Game Client')
     parser.add_argument('--server-ports', default='8889,8890,8891', 
                        help='Comma-separated list of server ports (default: 8889,8890,8891)')
     parser.add_argument('--server-host', default='127.0.0.1', 
@@ -753,7 +753,7 @@ def parse_client_arguments():
 
 # Main execution
 if __name__ == "__main__":
-    logger.info("🎮 Color Tap Battle Client Starting...")
+    logger.info("🎮 Stroop Color Game Client Starting...")
 
     # Parse command line arguments
     args = parse_client_arguments()
@@ -767,7 +767,7 @@ if __name__ == "__main__":
     else:
         server_ports = None
 
-    logger.info(f"🎮 Starting Color Tap Battle Client")
+    logger.info(f"🎮 Starting Stroop Color Game Client")
     if use_load_balancer:
         logger.info(f"🔄 Using Load Balancer on port 8888")
     else:

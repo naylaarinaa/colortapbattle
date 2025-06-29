@@ -5,7 +5,7 @@ from http import HttpServer
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def parse_arguments():
-    parser = argparse.ArgumentParser(description='Color Tap Battle Server')
+    parser = argparse.ArgumentParser(description='Stroop Color Game Server')
     parser.add_argument('--port', type=int, default=8889, help='Server port (default: 8889)')
     parser.add_argument('--redis-host', default='127.0.0.1', help='Redis host (default: 127.0.0.1)')
     parser.add_argument('--redis-port', type=int, default=6379, help='Redis port (default: 6379)')
@@ -174,7 +174,7 @@ def main():
     
     signal.signal(signal.SIGINT, signal_handler)
     
-    print("🎮 Starting Color Tap Battle Server...")
+    print("🎮 Starting Stroop Color Game Server...")
     print(f"🚀 Server ID: {args.server_id}")
     print(f"🔗 Redis: {args.redis_host}:{args.redis_port}")
     if args.required_players:

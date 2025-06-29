@@ -227,7 +227,7 @@ def main():
     # Set up signal handler for Ctrl+C
     signal.signal(signal.SIGINT, signal_handler)
     
-    parser = argparse.ArgumentParser(description='Color Tap Battle Load Balancer')
+    parser = argparse.ArgumentParser(description='Stroop Color Game Load Balancer')
     parser.add_argument('--port', type=int, default=8888, help='Load balancer listen port (default: 8888)')
     parser.add_argument('--backends', default='8889,8890,8891', help='Backend server ports (default: 8889,8890,8891)')
     parser.add_argument('--host', default='127.0.0.1', help='Backend server host (default: 127.0.0.1)')

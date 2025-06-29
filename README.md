@@ -1,8 +1,8 @@
-# Color Tap Battle - Multiplayer Game
+# Stroop Color Game - Multiplayer Real-Time
 
 ## Deskripsi
 
-Color Tap Battle adalah permainan multiplayer real-time berbasis **Stroop Color Game** yang dibangun dengan Python. Permainan menggunakan server HTTP custom dan client pygame untuk pengalaman gaming yang tersinkronisasi dengan sempurna.
+**Stroop Color Game** adalah permainan multiplayer real-time berbasis **Stroop Effect** yang dibangun dengan Python. Game ini menggunakan arsitektur terdistribusi: Redis untuk state sharing, load balancer untuk distribusi client, dan client pygame untuk pengalaman bermain yang sinkron.
 
 ## Struktur Proyek
 
@@ -18,23 +18,28 @@ colortapbattle/
 │   ├── correct.png                  # Popup jawaban benar
 │   ├── wrong.png                    # Popup jawaban salah
 │   ├── timesup.png                  # Popup waktu habis
-│   └── roundcompleted.png           # Popup ronde selesai
+│   ├── roundcompleted.png           # Popup ronde selesai
+│   ├── final_score.png              # Background halaman skor akhir
+│   └── winner.png                   # Popup pemenang
 ├── src/
-│   ├── client.py                    # Aplikasi client pygame
-│   ├── http.py                      # Server HTTP dan game logic
+│   ├── client.py                    # Client pygame (UI & koneksi)
+│   ├── http.py                      # HTTP server & game logic
 │   ├── server_thread_http.py        # Multi-threaded HTTP server
-├── requirements.txt                 # Dependensi Python
-├── .gitignore                      # Git ignore file
-└── README.md                       # Dokumentasi proyek
+│   ├── game_state.py                # Manajemen state game di Redis
+│   └── load_balancer.py             # Load balancer untuk multi-server
+├── requirements.txt                 # Dependensi Python (pygame, redis)
+├── .gitignore                       # Git ignore file
+└── README.md                        # Dokumentasi proyek
 ```
 
-## Instalasi dan Setup
+## Instalasi & Setup
 
 ### 1. Persyaratan Sistem
 
-- Python 3.7 atau lebih baru
-- pygame untuk rendering client
-- Koneksi internet untuk multiplayer
+- Python 3.7+
+- Redis Server
+- pygame
+- Koneksi internet (untuk multiplayer)
 
 ### 2. Instalasi Dependensi
 
@@ -42,283 +47,215 @@ colortapbattle/
 pip install -r requirements.txt
 ```
 
-### 3. Verifikasi Asset
+### 3. Setup Redis Server
 
-Pastikan semua file asset berada di folder `assets/`:
+**Windows:**
 
-- Font files: `BalsamiqSans-Regular.ttf`, `LuckiestGuy-Regular.ttf`
-- Background images: `main.png`, `username.png`, `instructions.png`, `waiting_lobby.png`,`finalscore.png`
-- Popup images: `correct.png`, `wrong.png`, `timesup.png`, `roundcompleted.png`, `winner.png`
+```bash
+# Download Redis dari https://redis.io/download
+# Atau gunakan Docker:
+docker run -d -p 6379:6379 redis:latest
+```
+
+**Linux/macOS:**
+
+```bash
+sudo apt install redis-server
+sudo systemctl start redis-server
+# atau
+brew install redis
+brew services start redis
+```
+
+### 4. Verifikasi Setup
+
+```bash
+redis-cli ping  # Harusnya: PONG
+ls assets/      # Pastikan semua asset tersedia
+```
 
 ## Cara Menjalankan Game
 
-### 1. Start Server
+### Mode 1: Load Balancer (Direkomendasikan)
 
-Jalankan server HTTP di terminal:
+1. **Start Redis Server**
+   ```bash
+   redis-server
+   # atau
+   sudo systemctl start redis-server
+   ```
+2. **Start Beberapa Game Server**
+   ```bash
+   cd src
+   python server_thread_http.py --port 8889 --server-id server1 --required-players 2
+   python server_thread_http.py --port 8890 --server-id server2
+   python server_thread_http.py --port 8891 --server-id server3
+   ```
+3. **Start Load Balancer**
+   ```bash
+   python load_balancer.py --port 8888 --backends 8889,8890,8891
+   ```
+4. **Start Client**
+   ```bash
+   python client.py
+   # Jalankan di terminal berbeda untuk client lain
+   ```
+
+### Mode 2: Direct Connection
+
+1. **Start Single Server**
+   ```bash
+   cd src
+   python server_thread_http.py --port 8889 --required-players 2
+   ```
+2. **Start Client**
+   ```bash
+   python client.py --direct-connection --server-host 127.0.0.1 --server-ports 8889
+   ```
+
+### Parameter Server
 
 ```bash
-cd src
-python server_thread_http.py [jumlah_pemain]
+python server_thread_http.py [OPTIONS]
+--port INTEGER              # Port server (default: 8889)
+--redis-host TEXT           # Redis host (default: 127.0.0.1)
+--redis-port INTEGER        # Redis port (default: 6379)
+--required-players INTEGER  # Jumlah pemain untuk mulai game
+--server-id TEXT            # ID server (untuk logging)
 ```
 
-**Parameter jumlah pemain:**
-
-- Default (tanpa parameter): 2 pemain
-- Custom: `python server_thread_http.py 4` (untuk 4 pemain)
-- Range: 2-10 pemain
-
-**Output server yang berhasil:**
-
-```
-Starting Color Tap Battle Server...
-Required players to start: 2
-Press Ctrl+C to stop the server
-2024-06-29 14:30:15 [INFO] Color Tap Battle Server started on 0.0.0.0:8889
-```
-
-### 2. Start Client (Pemain)
-
-Di terminal terpisah, jalankan client untuk setiap pemain:
+### Parameter Load Balancer
 
 ```bash
-cd src
-python client.py
+python load_balancer.py [OPTIONS]
+--port INTEGER    # Port load balancer (default: 8888)
+--backends TEXT   # Port backend servers (default: 8889,8890,8891)
+--host TEXT       # Host backend server (default: 127.0.0.1)
 ```
 
-**Flow client:**
+### Parameter Client
+
+```bash
+python client.py [OPTIONS]
+--direct-connection      # Koneksi langsung ke server (tanpa load balancer)
+--server-host TEXT       # Host server (default: 127.0.0.1)
+--server-ports TEXT      # Port server (default: 8889)
+```
+
+## Alur Permainan
+
+```
+Input Username → Instructions → Lobby → Countdown → Game → Final Score → Restart/Exit
+```
 
 1. Input username (max 5 karakter)
-2. Baca instruksi permainan
+2. Baca instruksi
 3. Masuk lobby menunggu pemain lain
-4. Countdown otomatis ketika pemain cukup
-5. Mulai bermain!
-
-### 3. Gameplay Flow
-
-```
-Username Input → Instructions → Lobby → Countdown → Game → Results
-```
+4. Countdown otomatis jika pemain cukup
+5. Main 10 soal
+6. Lihat skor akhir & ranking
+7. Pilih restart atau exit
 
 ## Aturan Permainan
 
-### 🎯 Objektif
+- **Objektif:** Pilih warna dari teks yang ditampilkan, BUKAN arti katanya.
+  - Contoh: Teks "RED" berwarna biru → Jawaban benar: "BLUE"
+- **Timer per soal:** 10 detik
+- **Total soal:** 10
+- **Auto advance:** Jika semua sudah jawab, lanjut otomatis
+- **Leaderboard:** Skor real-time
 
-Pemain harus **mencocokkan nama warna dengan warna text** yang ditampilkan, bukan dengan makna kata.
+### Sistem Poin
 
-**Contoh:**
+| Kondisi                    | Poin                         |
+| -------------------------- | ---------------------------- |
+| Jawaban benar              | Base + Time bonus            |
+| Jawaban pertama yang benar | Base + Time bonus + 50 bonus |
+| Jawaban salah/tidak jawab  | 0                            |
 
-- Text "RED" ditampilkan dalam warna BLUE
-- Jawaban yang benar adalah "BLUE" (warna text-nya)
-- Bukan "RED" (makna kata-nya)
-
-### ⚡ Sistem Poin
-
-| Kondisi                    | Poin                                |
-| -------------------------- | ----------------------------------- |
-| Jawaban benar              | Base points + Time bonus            |
-| Jawaban pertama yang benar | Base points + Time bonus + 50 bonus |
-| Jawaban salah              | 0 poin                              |
-| Tidak menjawab             | 0 poin                              |
-
-**Time bonus calculation:**
-
-- Time remaining × 10 points
-- Contoh: 7 detik tersisa = 70 poin
-- First correct bonus: +50 poin tambahan
-
-### 🎮 Mekanik Game
-
-- **Timer per soal**: 10 detik
-- **Total soal**: 10 pertanyaan
-- **Auto advance**: Lanjut otomatis jika semua pemain sudah menjawab
-- **Real-time leaderboard**: Update skor langsung
-- **Synchronized gameplay**: Semua pemain melihat soal yang sama
-
-### 🏆 Special Screens
-
-- **Time's Up**: Muncul jika waktu habis
-- **Round Completed**: Muncul jika semua pemain sudah menjawab
-- **Popup Feedback**: Visual feedback untuk jawaban benar/salah
+- **Time bonus:** Sisa detik × 10 poin
+- **First correct:** +50 poin
 
 ## Arsitektur Teknis
 
-### 🌐 Network Architecture
-
 ```
-Client 1 ←→ HTTP/JSON ←→ Multi-threaded Server ←→ HTTP/JSON ←→ Client N
-                              ↓
-                         Game State Manager
-                         (Thread-safe)
+                     ┌─────────────────┐
+                     │  Load Balancer  │
+                     │   (Port 8888)   │
+                     └─────────┬───────┘
+                               │
+              ┌────────────────┼────────────────┐
+              │                │                │
+        ┌─────▼─────┐    ┌─────▼─────┐    ┌─────▼─────┐
+        │  Server 1 │    │  Server 2 │    │  Server 3 │
+        │ Port 8889 │    │ Port 8890 │    │ Port 8891 │
+        └─────┬─────┘    └─────┬─────┘    └─────┬─────┘
+              │                │                │
+              └────────────────┼────────────────┘
+                               │
+                      ┌────────▼────────┐
+                      │  Redis Server   │
+                      │   (Port 6379)   │
+                      │  Shared State   │
+                      └─────────────────┘
 ```
 
-### 🔧 Komponen Utama
+### Komponen Utama
 
-#### Server Side (`http.py`)
+- **game_state.py**: State game di Redis, thread-safe, heartbeat, scalable
+- **load_balancer.py**: Round robin, health check, failover, proxy
+- **http.py**: Game logic, REST API, fallback ke in-memory jika Redis down
+- **server_thread_http.py**: Multi-threaded server, Redis integration, shutdown aman
+- **client.py**: Pygame UI, auto connect ke load balancer/server, asset management
 
-- **HttpServer**: Core game logic dan state management
-- **Thread-safe operations**: Concurrent player handling
-- **Heartbeat monitoring**: Auto-disconnect idle players
-- **Question generation**: Random color/text combinations
-- **Score calculation**: Time-based + bonus points
+### API Endpoints
 
-#### Network Layer (`server_thread_http.py`)
-
-- **Multi-threaded HTTP server**: Handle multiple connections
-- **Request routing**: HTTP method dan endpoint handling
-- **Connection management**: Graceful client connect/disconnect
-- **Error handling**: Network timeouts dan failures
-
-#### Client Side (`client.py`)
-
-- **Pygame rendering**: 60 FPS smooth gameplay
-- **HTTP communication**: RESTful API calls ke server
-- **UI/UX components**: Animated buttons, input fields, popups
-- **Asset management**: Font dan image loading dengan fallbacks
-- **State synchronization**: Real-time game state updates
-
-### 📡 API Endpoints
-
-| Method | Endpoint              | Purpose                     |
-| ------ | --------------------- | --------------------------- |
-| `POST` | `/join`               | Join game lobby             |
-| `GET`  | `/status?player_id=X` | Get game status (heartbeat) |
-| `GET`  | `/question`           | Get current question        |
-| `POST` | `/answer`             | Submit answer               |
-| `POST` | `/reset`              | Reset game (admin)          |
-
-### 🎨 Asset System
-
-- **Fallback mechanism**: Jika asset tidak ditemukan, gunakan rendering manual
-- **Scalable graphics**: Images di-scale sesuai resolusi game
-- **Font loading**: Custom fonts dengan system font sebagai backup
+| Method | Endpoint            | Fungsi                  |
+| ------ | ------------------- | ----------------------- |
+| POST   | /join               | Join lobby              |
+| GET    | /status?player_id=X | Status game (heartbeat) |
+| GET    | /question           | Soal saat ini           |
+| POST   | /answer             | Submit jawaban          |
+| POST   | /reset              | Reset game (admin)      |
+| GET    | /server-stats       | Statistik server        |
 
 ## Fitur Lanjutan
 
-### 🔄 Auto-Reset System
+- **Auto-reset:** Game otomatis reset setelah selesai
+- **Load balancing:** Distribusi client ke banyak server
+- **Perfect sync:** Semua client sinkron soal & timer
+- **Thread safety:** Redis lock, connection pooling
+- **Disconnection handling:** Heartbeat, auto-remove player
+- **Monitoring & logging:** Structured log, metrics
 
-- Game otomatis reset setelah selesai
-- Client baru bisa langsung join tanpa restart server
-- Clean state untuk setiap session baru
+## Troubleshooting
 
-### ⏱️ Perfect Synchronization
-
-- Server-side timing authority
-- Client polling untuk real-time updates
-- Consistent countdown di semua client
-
-### 🧵 Thread Safety
-
-- Mutex locks untuk shared game state
-- Atomic operations untuk score updates
-- Safe concurrent player management
-
-### 💔 Disconnection Handling
-
-- Auto-detect player timeouts
-- Graceful player removal
-- Game continues dengan remaining players
-
-### 📊 Logging System
-
-- Structured logging untuk debugging
-- Network communication tracking
-- Game event monitoring
-- Performance metrics
-
-## Development & Debugging
-
-### 🔍 Logs
-
-**Server logs:**
-
-```
-2024-06-29 14:30:15 [INFO] 🎮 Game started - Question 1
-2024-06-29 14:30:15 [INFO] ✨ Generated Q1: 'RED' in BLUE
-2024-06-29 14:30:17 [INFO] 📝 Player Alice answered: BLUE for question 1
-2024-06-29 14:30:17 [INFO] ✅ Correct! Player Alice earned 85 points
-```
-
-**Client logs:**
-
-```
-14:30:15 [INFO] 🎮 Color Tap Battle Client Starting...
-14:30:16 [INFO] 🔗 Client initialized for player: Alice
-14:30:17 [INFO] ✅ Joined successfully! Players: 1/2
-14:30:19 [INFO] ⏰ Countdown started (3s)
-14:30:22 [INFO] 🎮 Game started - Question 1
-```
-
-### 🛠️ Testing
-
-**Multi-player testing:**
-
-```bash
-# Terminal 1: Start server
-python server_thread_http.py 3
-
-# Terminal 2-4: Start clients
-python client.py  # Player 1
-python client.py  # Player 2
-python client.py  # Player 3
-```
-
-### 🐛 Common Issues
-
-| Problem                       | Solution                              |
+| Problem                       | Solusi                                |
 | ----------------------------- | ------------------------------------- |
-| "Failed to connect to server" | Pastikan server running di port 8889  |
-| Font/asset not found          | Check files di folder `assets/`       |
-| Game lag/desync               | Check network latency, restart server |
-| Server crash                  | Check logs untuk error details        |
+| "Failed to connect to server" | Pastikan server jalan di port 8889    |
+| Font/asset not found          | Cek file di folder `assets/`          |
+| Game lag/desync               | Cek jaringan, restart server          |
+| Server crash                  | Cek log untuk error detail            |
+| Redis connection failed       | Jalankan `redis-server`               |
+| Port already in use           | Ganti port atau kill proses lama      |
+| No healthy backend servers    | Start backend server sebelum balancer |
 
 ## Performance & Scalability
 
-### 📈 Specifications
-
-- **Max players**: 10 concurrent
-- **Response time**: <100ms for local network
-- **Memory usage**: ~50MB per client
-- **CPU usage**: Minimal (single-threaded game logic)
-
-### ⚡ Optimizations
-
-- **Efficient polling**: 60 FPS client, smart server requests
-- **Asset caching**: Images loaded once, reused
-- **Network optimization**: JSON compression, minimal payloads
-- **Memory management**: Proper cleanup dan garbage collection
+- **Max players:** 10 concurrent
+- **Response time:** <100ms (local)
+- **Memory:** ~50MB per client
+- **Optimizations:** Asset caching, polling efisien, JSON minim
 
 ## Contributing
 
-### 📝 Code Style
-
-- Python PEP 8 compliance
-- Meaningful variable names dalam bahasa Inggris
-- Comments dalam bahasa Indonesia untuk clarity
-- Structured logging dengan emoji indicators
-
-### 🔄 Development Workflow
-
-1. Fork repository
-2. Create feature branch
-3. Test dengan multiple clients
-4. Update documentation
-5. Submit pull request
-
-### 🧪 Testing Checklist
-
-- [ ] Server starts tanpa error
-- [ ] Multiple clients dapat connect
-- [ ] Game synchronization berfungsi
-- [ ] Scoring system akurat
-- [ ] Disconnection handling
-- [ ] Asset loading dengan fallbacks
-
-## License
-
-Proyek ini dibuat untuk keperluan pembelajaran **Pemrograman Jaringan Semester 6**.
+- Ikuti PEP 8
+- Nama variabel bahasa Inggris, komentar bahasa Indonesia
+- Logging terstruktur
+- Test multi-client sebelum PR
 
 ---
 
-**🎮 Selamat bermain Color Tap Battle!**
+**🎮 Selamat bermain Stroop Color Game!**
 
-Untuk support atau bug reports, silakan buka issue di repository ini.
+Untuk support atau bug report, silakan buka issue di repository ini.

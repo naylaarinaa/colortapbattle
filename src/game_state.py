@@ -20,11 +20,11 @@ class RedisGameState:
         self._cache_timeout = 5  # Cache config for 5 seconds
         
         # Redis keys
-        self.GAME_KEY = "colortap:game_state"
-        self.PLAYERS_KEY = "colortap:players"
-        self.SCORES_KEY = "colortap:scores"
-        self.HEARTBEAT_KEY = "colortap:heartbeat"
-        self.CONFIG_KEY = "colortap:config"
+        self.GAME_KEY = "stroopcolor:game_state"
+        self.PLAYERS_KEY = "stroopcolor:players"
+        self.SCORES_KEY = "stroopcolor:scores"
+        self.HEARTBEAT_KEY = "stroopcolor:heartbeat"
+        self.CONFIG_KEY = "stroopcolor:config"
         
         # Initialize game configuration first
         self._init_game_config(required_players)
@@ -164,7 +164,7 @@ class RedisGameState:
         self.redis_client.srem(self.PLAYERS_KEY, player_id)
         self.redis_client.hdel(self.SCORES_KEY, player_id)
         self.redis_client.hdel(self.HEARTBEAT_KEY, player_id)
-        self.redis_client.srem("colortap:answered_players", player_id)
+        self.redis_client.srem("stroopcolor:answered_players", player_id)
 
     def get_player_scores(self) -> Dict[str, int]:
         """Get all player scores"""
@@ -182,18 +182,18 @@ class RedisGameState:
     def get_answered_players(self) -> set:
         """Get set of players who answered current question"""
         try:
-            return set(self.redis_client.smembers("colortap:answered_players"))
+            return set(self.redis_client.smembers("stroopcolor:answered_players"))
         except Exception as e:
             print(f"❌ Error getting answered players: {e}")
             return set()
 
     def add_answered_player(self, player_id: str):
         """Add player to answered players set"""
-        self.redis_client.sadd("colortap:answered_players", player_id)
+        self.redis_client.sadd("stroopcolor:answered_players", player_id)
 
     def clear_answered_players(self):
         """Clear answered players set"""
-        self.redis_client.delete("colortap:answered_players")
+        self.redis_client.delete("stroopcolor:answered_players")
 
     def update_heartbeat(self, player_id: str):
         """Update player heartbeat timestamp"""
@@ -233,7 +233,7 @@ class RedisGameState:
                     pipe.srem(self.PLAYERS_KEY, player_id)
                     pipe.hdel(self.SCORES_KEY, player_id)
                     pipe.hdel(self.HEARTBEAT_KEY, player_id)
-                    pipe.srem("colortap:answered_players", player_id)
+                    pipe.srem("stroopcolor:answered_players", player_id)
                     print(f"Player {player_id} disconnected (timeout)")
                 pipe.execute()
             
