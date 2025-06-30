@@ -542,24 +542,308 @@ class HttpServer:
 
     # Fallback methods for when Redis is not available
     def _get_game_status_fallback(self, player_id):
-        """Original game status logic for fallback mode"""
-        # ... implement original logic here
-        pass
+        """Complete fallback game status logic"""
+        now = time.time()
+        gs = self.game_state
+        
+        # Update heartbeat for real players
+        if player_id != 'heartbeat' and player_id in gs['connected_players']:
+            gs['last_heartbeat'][player_id] = now
+        
+        # Check for disconnected players
+        timeout = gs.get('heartbeat_timeout', 30)
+        disconnected = []
+        for pid, last_beat in list(gs['last_heartbeat'].items()):
+            if now - last_beat > timeout:
+                disconnected.append(pid)
+        
+        # Remove disconnected players
+        for pid in disconnected:
+            gs['connected_players'].discard(pid)
+            gs['player_scores'].pop(pid, None)
+            gs['last_heartbeat'].pop(pid, None)
+            gs['answered_players'].discard(pid)
+            print(f"Player {pid} disconnected (timeout)")
+        
+        # Reset game if no players
+        if not gs['connected_players'] and (gs['game_started'] or gs['countdown_started']):
+            print("All players disconnected! Resetting game...")
+            self.reset_game_internal_fallback()
+            return {'status': 'waiting', 'player_count': 0, 'required_players': self.REQUIRED_PLAYERS}
+        
+        # Game finished
+        if gs['game_finished']:
+            return {'status': 'finished', 'game_started': True, 'final_scores': gs['player_scores']}
+        
+        # Countdown logic
+        if gs['countdown_started'] and not gs['game_started']:
+            elapsed = now - gs['countdown_start_time']
+            remaining = max(0, gs['countdown_duration'] - elapsed)
+            
+            if remaining <= 0:
+                print("🚀 Countdown finished, starting game!")
+                self.start_game()
+                return {'status': 'playing', 'game_started': True}
+            else:
+                return {
+                    'status': 'countdown',
+                    'countdown_remaining': remaining,
+                    'player_count': len(gs['connected_players']),
+                    'required_players': self.REQUIRED_PLAYERS,
+                    'game_started': False,
+                    'countdown_started': True
+                }
+        
+        # Waiting for players
+        if not gs['game_started']:
+            return {
+                'status': 'waiting',
+                'player_count': len(gs['connected_players']),
+                'players_needed': max(0, self.REQUIRED_PLAYERS - len(gs['connected_players'])),
+                'required_players': self.REQUIRED_PLAYERS,
+                'game_started': False,
+                'countdown_started': gs['countdown_started']
+            }
+        
+        # Game running
+        question_duration = gs.get('question_duration', 10)
+        elapsed = now - gs['question_start_time']
+        all_answered = len(gs['answered_players']) >= len(gs['connected_players'])
+        player_has_answered = player_id in gs['answered_players']
+        
+        # Time up logic
+        if elapsed >= question_duration and not all_answered:
+            if not gs['timesup_state']:
+                print(f"⏰ Time's up for question {gs['current_question_number']}")
+                gs['timesup_state'] = True
+                gs['timesup_start_time'] = now
+            
+            timesup_elapsed = now - gs['timesup_start_time']
+            timesup_remaining = max(0, gs['timesup_duration'] - timesup_elapsed)
+            
+            if timesup_remaining <= 0:
+                return self._advance_question_safely_fallback(now, "timesup_finished")
+            
+            status = 'roundcompleted_waiting' if player_has_answered else 'timesup'
+            return {
+                'status': status,
+                'timesup_remaining': timesup_remaining,
+                'current_question_number': gs['current_question_number'],
+                'max_questions': gs['max_questions'],
+                'game_started': True,
+                'player_answered': player_has_answered,
+                'scores': gs['player_scores']
+            }
+        
+        # All answered logic
+        elif all_answered and not gs['round_completed_state']:
+            print(f"🎉 All players answered question {gs['current_question_number']}!")
+            gs['round_completed_state'] = True
+            gs['round_completed_start_time'] = now
+            
+            return {
+                'status': 'roundcompleted_all',
+                'roundcompleted_remaining': gs['round_completed_duration'],
+                'current_question_number': gs['current_question_number'],
+                'max_questions': gs['max_questions'],
+                'game_started': True,
+                'all_answered': True,
+                'scores': gs['player_scores']
+            }
+        
+        elif gs['round_completed_state']:
+            round_elapsed = now - gs['round_completed_start_time']
+            round_remaining = max(0, gs['round_completed_duration'] - round_elapsed)
+            
+            if round_remaining <= 0:
+                return self._advance_question_safely_fallback(now, "all_answered_completed")
+            
+            return {
+                'status': 'roundcompleted_all',
+                'roundcompleted_remaining': round_remaining,
+                'current_question_number': gs['current_question_number'],
+                'max_questions': gs['max_questions'],
+                'game_started': True,
+                'all_answered': True,
+                'scores': gs['player_scores']
+            }
+        
+        # Normal playing state
+        return {
+            'status': 'playing',
+            'game_started': True,
+            'current_question_number': gs['current_question_number'],
+            'max_questions': gs['max_questions'],
+            'question_time_remaining': max(0, question_duration - elapsed),
+            'players': list(gs['connected_players']),
+            'scores': gs['player_scores'],
+            'all_answered': all_answered,
+            'player_answered': player_has_answered
+        }
+
+    def _advance_question_safely_fallback(self, now, reason):
+        """Advance to next question using fallback state"""
+        gs = self.game_state
+        
+        if gs['advancing_question']:
+            return {'status': 'playing', 'game_started': True}
+        
+        gs['advancing_question'] = True
+        
+        try:
+            print(f"🔄 Advancing question from {gs['current_question_number']} (reason: {reason})")
+            
+            if gs['current_question_number'] >= gs['max_questions']:
+                print(f"🏁 Game finished after {gs['max_questions']} questions!")
+                gs['game_finished'] = True
+                return {'status': 'finished', 'game_started': True, 'final_scores': gs['player_scores']}
+            
+            # Generate new question and update state
+            gs['current_question_number'] += 1
+            gs['current_question'] = self.generate_new_question_fallback()
+            gs['question_start_time'] = now
+            gs['timesup_state'] = False
+            gs['timesup_start_time'] = None
+            gs['round_completed_state'] = False
+            gs['round_completed_start_time'] = None
+            gs['answered_players'].clear()
+            gs['first_correct_answer'] = None
+            
+            print(f"✅ Advanced to question {gs['current_question_number']}")
+            
+            return {
+                'status': 'playing',
+                'game_started': True,
+                'current_question_number': gs['current_question_number'],
+                'max_questions': gs['max_questions'],
+                'question_time_remaining': gs['question_duration'],
+                'players': list(gs['connected_players']),
+                'scores': gs['player_scores'],
+                'all_answered': False
+            }
+        finally:
+            gs['advancing_question'] = False
 
     def _post_answer_fallback(self, data):
-        """Original answer logic for fallback mode"""
-        # ... implement original logic here
-        pass
+        """Handle answer submission using fallback state"""
+        gs = self.game_state
+        player_id = data.get('player_username', data.get('player_id', 'anonymous'))
+        question_id = data.get('question_id')
+        user_answer = data.get('answer')
+        
+        print(f"📝 Player {player_id} answered: {user_answer} for question {question_id}")
+        
+        if not gs['game_started'] or gs['game_finished']:
+            print(f"❌ Game not active for {player_id}")
+            return {'status': 'game_not_active'}
+        
+        if question_id != gs['question_id_counter']:
+            print(f"❌ Question expired for {player_id}: received {question_id}, current {gs['question_id_counter']}")
+            return {'status': 'question_expired'}
+        
+        if player_id in gs['answered_players']:
+            print(f"❌ Player {player_id} already answered")
+            return {'status': 'already_answered'}
+        
+        now = time.time()
+        elapsed = now - gs['question_start_time']
+        time_remaining = max(0, gs['question_duration'] - elapsed)
+        time_points = int(time_remaining * 10)
+        
+        gs['answered_players'].add(player_id)
+        
+        is_correct = user_answer == gs['current_correct_answer']
+        
+        if is_correct:
+            is_first = gs['first_correct_answer'] is None
+            if is_first:
+                gs['first_correct_answer'] = player_id
+            
+            bonus = 50 if is_first else 0
+            total = time_points + bonus
+            gs['player_scores'][player_id] = gs['player_scores'].get(player_id, 0) + total
+            
+            print(f"✅ Correct! Player {player_id} earned {total} points (base: {time_points}, bonus: {bonus})")
+            return {
+                'status': 'correct',
+                'correct': True,
+                'new_score': gs['player_scores'][player_id],
+                'points_earned': total,
+                'time_points': time_points,
+                'bonus_points': bonus,
+                'first_correct': is_first,
+                'time_remaining': time_remaining
+            }
+        
+        print(f"❌ Wrong! Player {player_id} answered {user_answer}, correct was {gs['current_correct_answer']}")
+        return {
+            'status': 'incorrect',
+            'correct': False,
+            'new_score': gs['player_scores'].get(player_id, 0),
+            'points_earned': 0,
+            'time_remaining': time_remaining
+        }
 
     def generate_new_question_fallback(self):
-        """Original question generation for fallback mode"""
-        # ... implement original logic here
-        pass
+        """Generate new question for fallback mode"""
+        import random
+        
+        gs = self.game_state
+        gs['question_id_counter'] += 1
+        
+        COLOR_NAMES = ["RED", "GREEN", "BLUE", "YELLOW", "PURPLE", "BLACK", "GRAY", "ORANGE", "PINK", "BROWN"]
+        
+        text = random.choice(COLOR_NAMES)
+        correct = random.choice([c for c in COLOR_NAMES if c != text])
+        options = random.sample([c for c in COLOR_NAMES if c != correct], 4) + [correct]
+        random.shuffle(options)
+        
+        question = {
+            "question_id": gs['question_id_counter'],
+            "text": text,
+            "text_color": correct,
+            "options": options
+        }
+        
+        gs['current_correct_answer'] = correct
+        gs['first_correct_answer'] = None
+        
+        print(f"✨ Generated Q{gs['question_id_counter']}: '{text}' in {correct}")
+        return question
 
     def reset_game_internal_fallback(self):
-        """Original reset logic for fallback mode"""
-        # ... implement original logic here
-        pass
+        """Reset game state for fallback mode"""
+        gs = self.game_state
+        players = gs['connected_players'].copy()
+        now = time.time()
+        
+        # Reset game state while preserving players
+        gs.update({
+            'question_id_counter': 0,
+            'current_question': None,
+            'current_correct_answer': None,
+            'game_started': False,
+            'countdown_started': False,
+            'countdown_start_time': None,
+            'game_start_time': None,
+            'question_start_time': None,
+            'current_question_number': 0,
+            'game_finished': False,
+            'first_correct_answer': None,
+            'answered_players': set(),
+            'timesup_state': False,
+            'timesup_start_time': None,
+            'round_completed_state': False,
+            'round_completed_start_time': None,
+            'advancing_question': False
+        })
+        
+        # Reset scores and heartbeats
+        for player_id in players:
+            gs['player_scores'][player_id] = 0
+            gs['last_heartbeat'][player_id] = now
+        
+        print(f"🔄 Game reset - ready for {len(players)} players!")
 
     def get_server_stats(self):
         """Get server statistics for load balancing"""

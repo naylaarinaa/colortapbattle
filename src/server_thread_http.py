@@ -73,24 +73,42 @@ class Server(threading.Thread):
         try:
             print("🔗 Testing Redis connection...")
             
-            # Test Redis connection before creating HttpServer
-            import redis
-            test_redis = redis.Redis(host=self.args.redis_host, port=self.args.redis_port, decode_responses=True)
-            test_redis.ping()
+            # Test Redis connection but don't exit on failure
+            redis_available = False
+            try:
+                import redis
+                test_redis = redis.Redis(host=self.args.redis_host, port=self.args.redis_port, decode_responses=True)
+                test_redis.ping()
+                
+                # Test basic operations
+                test_redis.set("test_key", "test_value")
+                result = test_redis.get("test_key")
+                test_redis.delete("test_key")
+                
+                print(f"✅ Redis connection test successful: {result}")
+                redis_available = True
+                
+            except Exception as redis_error:
+                print(f"⚠️ Redis connection failed: {redis_error}")
+                print("🔄 Falling back to in-memory mode...")
+                redis_available = False
             
-            # Test basic operations
-            test_redis.set("test_key", "test_value")
-            result = test_redis.get("test_key")
-            test_redis.delete("test_key")
-            
-            print(f"✅ Redis connection test successful: {result}")
-            
-            # Initialize HTTP server with arguments
-            httpserver = HttpServer(
-                redis_host=self.args.redis_host,
-                redis_port=self.args.redis_port,
-                required_players=self.args.required_players
-            )
+            # Initialize HTTP server with or without Redis
+            if redis_available:
+                httpserver = HttpServer(
+                    redis_host=self.args.redis_host,
+                    redis_port=self.args.redis_port,
+                    required_players=self.args.required_players
+                )
+                print(f"🔗 Running with Redis backend")
+            else:
+                # Force fallback mode by passing invalid Redis connection
+                httpserver = HttpServer(
+                    redis_host='invalid_host',  # This will trigger fallback
+                    redis_port=9999,            # Invalid port
+                    required_players=self.args.required_players or 2
+                )
+                print(f"💾 Running with in-memory backend")
             
             self.my_socket.bind(('0.0.0.0', self.port))
             self.my_socket.listen(5)
@@ -99,8 +117,13 @@ class Server(threading.Thread):
             required_players = httpserver.REQUIRED_PLAYERS
             
             logging.info(f"🚀 {self.args.server_id} started on 0.0.0.0:{self.port}")
-            logging.info(f"🔗 Redis: {self.args.redis_host}:{self.args.redis_port}")
-            logging.info(f"🎯 Required players: {required_players} (from Redis)")
+            
+            if redis_available:
+                logging.info(f"🔗 Redis: {self.args.redis_host}:{self.args.redis_port}")
+                logging.info(f"🎯 Required players: {required_players} (from Redis)")
+            else:
+                logging.info(f"💾 Mode: In-memory fallback")
+                logging.info(f"🎯 Required players: {required_players} (from config)")
             
             # Test game state access
             try:
@@ -124,9 +147,7 @@ class Server(threading.Thread):
                 except OSError as e:
                     if self.running: logging.error(f"Socket error: {e}")
                     break
-        except redis.ConnectionError as e:
-            logging.error(f"❌ Redis connection failed: {e}")
-            logging.error("💡 Make sure Redis server is running: redis-server")
+                
         except Exception as e:
             logging.error(f"❌ Server error: {e}")
             import traceback
