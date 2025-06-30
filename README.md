@@ -1,5 +1,22 @@
 # Stroop Color Game - Multiplayer Real-Time
 
+## 🔧 **Versi dan Branch**
+
+### **Branch Utama: Redis Version**
+Branch `main` ini menggunakan **Redis sebagai backend database** untuk state management.
+
+### **Alternative: Non-Redis Version**
+Jika Anda tidak ingin menggunakan Redis atau ingin implementasi yang lebih sederhana, tersedia versi **tanpa Redis** di branch terpisah:
+
+```bash
+# Pindah ke branch non-redis
+git checkout non-redis
+
+# Atau clone langsung branch non-redis
+git clone -b non-redis https://github.com/your-username/colortapbattle.git
+```
+
+
 ## Deskripsi
 
 **Stroop Color Game** adalah permainan multiplayer real-time berbasis **Stroop Effect** yang dibangun dengan Python. Game ini menggunakan arsitektur terdistribusi: Redis untuk state sharing, load balancer untuk distribusi client, dan client pygame untuk pengalaman bermain yang sinkron.
